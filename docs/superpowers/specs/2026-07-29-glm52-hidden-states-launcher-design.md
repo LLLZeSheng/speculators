@@ -30,7 +30,9 @@ the command easy to audit against `test.sh`.
 
 The script will use `set -euo pipefail`, export the same CUDA and logging
 environment as the baseline launcher, create the hidden-state directory, and
-then replace itself with the Python launcher process via `exec`.
+then replace itself with the Python launcher process via `exec`. It accepts an
+optional `--dry-run` argument and forwards it to `launch_vllm.py` before the
+vLLM argument separator.
 
 ## Command Construction and Data Flow
 
@@ -63,6 +65,8 @@ directory.
 ## Error Handling
 
 - Strict Bash mode stops on an unset variable or failed setup command.
+- Any argument other than a single optional `--dry-run` prints usage and exits
+  with status 2 before model launch.
 - `mkdir -p` makes output-directory setup idempotent and fails before model
   launch if the directory cannot be created.
 - Absolute paths avoid dependence on the caller's current working directory.
@@ -75,15 +79,16 @@ directory.
 Verification will not load the model or occupy GPUs:
 
 1. Run `bash -n` on the new script.
-2. Invoke the same Python launcher command with `--dry-run` before the vLLM
-   separator.
+2. Invoke the new script itself with `--dry-run`, exercising its real argument
+   order and paths without starting vLLM.
 3. Confirm the printed command contains:
    - the GLM-5.2 model path;
    - hidden-state layers `[8, 23, 39, 55, 70, 78]`;
    - the file connector output path;
    - TP=8 and the existing GLM-specific vLLM options;
    - `--no-enable-chunked-prefill`.
-4. Confirm the existing baseline launcher has no changes.
+4. Confirm the existing baseline launcher still matches its recorded SHA-256
+   digest.
 
 Actually starting the eight-GPU model and issuing collection requests is out of
 scope for this script-writing task.

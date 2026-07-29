@@ -16,6 +16,8 @@
 - Pass auxiliary target layers `8 23 39 55 70`; allow `launch_vllm.py` to append final layer `78`.
 - Use GPUs `0,1,2,3,4,5,6,7`, TP=8, and expert parallelism.
 - Preserve all GLM-specific serving arguments from the existing launcher.
+- Accept only an optional `--dry-run` argument, which must exercise the real
+  launcher without starting vLLM.
 - Do not start or stop a live model while verifying the new script.
 
 ---
@@ -58,11 +60,21 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export CUDA_HOME=/mnt/pass/miniconda3/lib/python3.13/site-packages/nvidia/cu13
 export VLLM_LOGGING_LEVEL=INFO
 
+launch_vllm_args=()
+if (( $# > 0 )); then
+  if (( $# != 1 )) || [[ "$1" != "--dry-run" ]]; then
+    echo "Usage: $0 [--dry-run]" >&2
+    exit 2
+  fi
+  launch_vllm_args+=(--dry-run)
+fi
+
 mkdir -p "${HIDDEN_STATES_PATH}"
 
 exec "${PYTHON_BIN}" "${LAUNCH_VLLM}" "${MODEL_PATH}" \
   --hidden-states-path "${HIDDEN_STATES_PATH}" \
   --target-layer-ids 8 23 39 55 70 \
+  "${launch_vllm_args[@]}" \
   -- \
   --host 0.0.0.0 \
   --port 8000 \
@@ -102,28 +114,7 @@ Expected: `bash -n` exits 0 and all four required strings are printed.
 Run:
 
 ```bash
-/mnt/pass/miniconda3/bin/python3.13 \
-  /mnt/paas/spec_train/speculators/scripts/launch_vllm.py \
-  /mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1 \
-  --hidden-states-path /mnt/paas/spec_train/hidden_states/glm5.2 \
-  --target-layer-ids 8 23 39 55 70 \
-  --dry-run \
-  -- \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --served-model-name glm-5.2 \
-  --max-model-len 20480 \
-  --tensor-parallel-size 8 \
-  --enable-expert-parallel \
-  --all2all-backend flashinfer_nvlink_one_sided \
-  --attention-backend FLASHINFER_MLA_SPARSE \
-  --kv-cache-dtype bfloat16 \
-  --reasoning-parser glm45 \
-  --tool-call-parser glm47 \
-  --enable-auto-tool-choice \
-  --trust-remote-code \
-  --distributed-executor-backend mp \
-  --moe-backend auto
+/mnt/paas/spec_train/start_glm5.2_hidden_states.sh --dry-run
 ```
 
 Expected: exit status 0. The printed `--speculative_config` JSON contains `"eagle_aux_hidden_state_layer_ids": [8, 23, 39, 55, 70, 78]`; the `--kv_transfer_config` JSON contains `"shared_storage_path": "/mnt/paas/spec_train/hidden_states/glm5.2"`; and the command ends with `--no-enable-chunked-prefill`.
@@ -134,9 +125,12 @@ Run:
 
 ```bash
 git -C /mnt/paas/spec_train/speculators status --short
-sha256sum /mnt/paas/spec_train/start_glm5.2.sh
+test "$(sha256sum /mnt/paas/spec_train/start_glm5.2.sh | cut -d ' ' -f 1)" = \
+  "4bc3c29c89cd684cc5223754f71a85018b3a711cf68006cfcfb3e25af621af76"
 ```
 
-Expected: the repository has no uncommitted implementation changes, because the requested launcher lives one directory above the Git repository. The baseline launcher's checksum is reported and it remains unmodified.
+Expected: the repository has no uncommitted implementation changes, because
+the requested launcher lives one directory above the Git repository. The
+baseline checksum comparison exits 0.
 
 The launcher itself cannot be committed by this repository because its required path is outside `/mnt/paas/spec_train/speculators`.
