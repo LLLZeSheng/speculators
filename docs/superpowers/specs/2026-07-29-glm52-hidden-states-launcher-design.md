@@ -15,7 +15,7 @@ existing baseline GLM-5.2 launcher.
   `/mnt/paas/spec_train/speculators/scripts/launch_vllm.py`
 - Hidden-state output:
   `/mnt/paas/spec_train/hidden_states/glm5.2`
-- Auxiliary target layers: `2`, `39`, and `75`
+- Auxiliary target layers: `8`, `23`, `39`, `55`, and `70`
 - Final target layer: `78`, appended by `launch_vllm.py`
 - GPU topology: tensor parallel size 8 with expert parallelism across GPUs
   `0,1,2,3,4,5,6,7`
@@ -37,7 +37,7 @@ then replace itself with the Python launcher process via `exec`.
 The shell script passes model and extraction arguments to `launch_vllm.py`:
 
 - `--hidden-states-path /mnt/paas/spec_train/hidden_states/glm5.2`
-- `--target-layer-ids 2 39 75`
+- `--target-layer-ids 8 23 39 55 70`
 
 `launch_vllm.py` reads the local GLM configuration, confirms that the model has
 78 hidden layers, appends layer 78, and constructs the vLLM
@@ -79,7 +79,7 @@ Verification will not load the model or occupy GPUs:
    separator.
 3. Confirm the printed command contains:
    - the GLM-5.2 model path;
-   - hidden-state layers `[2, 39, 75, 78]`;
+   - hidden-state layers `[8, 23, 39, 55, 70, 78]`;
    - the file connector output path;
    - TP=8 and the existing GLM-specific vLLM options;
    - `--no-enable-chunked-prefill`.
