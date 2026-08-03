@@ -15,7 +15,7 @@
 - Launcher is `/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh`.
 - Install and enable TensorBoard only; do not install or enable W&B, Trackio, or MLflow.
 - Do not start the full eight-GPU training job during validation.
-- Preserve `GLM52_PYTHON_BIN` and `GLM52_TORCHRUN_BIN` overrides.
+- Change only the launcher's two fixed runtime assignments and one logger argument.
 - Preserve all pre-existing tracked and untracked repository changes.
 - Use `https://mirrors.aliyun.com/pypi/simple` for Python package downloads.
 
@@ -28,31 +28,38 @@
 - Read: `/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh`
 
 **Interfaces:**
-- Consumes: The launcher's real `--dry-run` behavior and rendered training command.
-- Produces: A reproducible shell contract that requires the dedicated torchrun path plus `--logger tensorboard` without starting training.
+- Consumes: A temporary shadow copy of the current launcher and a recording `torchrun` stub.
+- Produces: A reproducible behavior contract that exercises the real preflight and requires `--logger tensorboard` without starting training.
 
 - [ ] **Step 1: Create the launcher contract test**
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-launcher=/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh
-output_file=/tmp/glm52_tensorboard_launcher_dry_run.out
-"$launcher" --dry-run >"$output_file" 2>&1
-grep -Fq '/mnt/paas/spec_train/speculators_venv/bin/torchrun' "$output_file"
-grep -Fq -- '--logger tensorboard' "$output_file"
-grep -Fq 'Dry-run complete; torchrun was not started.' "$output_file"
-if grep -Fq 'Starting full GLM-5.2 DSpark training' "$output_file"; then
-  echo 'dry-run unexpectedly started training' >&2
-  exit 1
-fi
+production_launcher=/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh
+shadow_launcher=/tmp/train_glm5.2_dspark_h200.tensorboard-test.sh
+torchrun_stub=/tmp/torchrun-tensorboard-test-stub.sh
+args_file=/tmp/glm52_tensorboard_torchrun_args.txt
+dataset_fixture=/tmp/glm52_tensorboard_dataset_fixture
+
+cp "$production_launcher" "$shadow_launcher"
+mkdir -p "$dataset_fixture"
+ln -sfn /mnt/paas/spec_train/hf_dataset_v2_glm52_8192/token_freq.pt "$dataset_fixture/token_freq.pt"
+ln -sfn /mnt/paas/spec_train/hf_dataset_v2_glm52_8192/d2t.npy "$dataset_fixture/d2t.npy"
+ln -sfn /mnt/paas/spec_train/hf_dataset_v2_glm52_8192/t2d.npy "$dataset_fixture/t2d.npy"
+sed -i -E "s#^DATA_PATH=.*#DATA_PATH=\"$dataset_fixture\"#" "$shadow_launcher"
+sed -i -E "s#^TORCHRUN_BIN=.*#TORCHRUN_BIN=\"$torchrun_stub\"#" "$shadow_launcher"
+chmod +x "$shadow_launcher" "$torchrun_stub"
+"$shadow_launcher"
+grep -Fxq -- '--logger' "$args_file"
+grep -Fxq 'tensorboard' "$args_file"
 ```
 
 - [ ] **Step 2: Run the contract test and verify the pre-change failure**
 
 Run: `bash /tmp/test_glm52_tensorboard_launcher.sh`
 
-Expected: non-zero exit because the rendered command uses `/mnt/pass/miniconda3/bin/torchrun` and contains no `--logger tensorboard` argument.
+Expected: non-zero exit first because `/mnt/pass/miniconda3/bin/python3.13` is unavailable; after only the runtime paths change, it fails because the recorded arguments contain no `--logger tensorboard`.
 
 ### Task 2: Install the TensorBoard Runtime
 
@@ -90,10 +97,10 @@ Expected: all installed packages are compatible and TensorBoard prints its versi
 - [ ] **Step 1: Change only the two runtime defaults and logger argument**
 
 ```diff
--readonly PYTHON_BIN="${GLM52_PYTHON_BIN:-/mnt/pass/miniconda3/bin/python3.13}"
--readonly TORCHRUN_BIN="${GLM52_TORCHRUN_BIN:-/mnt/pass/miniconda3/bin/torchrun}"
-+readonly PYTHON_BIN="${GLM52_PYTHON_BIN:-/mnt/paas/spec_train/speculators_venv/bin/python}"
-+readonly TORCHRUN_BIN="${GLM52_TORCHRUN_BIN:-/mnt/paas/spec_train/speculators_venv/bin/torchrun}"
+-PYTHON_BIN="/mnt/pass/miniconda3/bin/python3.13"
+-TORCHRUN_BIN="/mnt/pass/miniconda3/bin/torchrun"
++PYTHON_BIN="/mnt/paas/spec_train/speculators_venv/bin/python"
++TORCHRUN_BIN="/mnt/paas/spec_train/speculators_venv/bin/torchrun"
 ```
 
 Add this argument beside `--log-dir` and `--run-name`:
@@ -165,9 +172,9 @@ Expected: exit zero and print the generated event-file path.
 
 - [ ] **Step 3: Validate the launcher without starting training**
 
-Run: `/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh --dry-run`
+Run: `bash /tmp/test_glm52_tensorboard_launcher.sh`
 
-Expected: preflight succeeds, printed command contains the venv torchrun plus `--logger tensorboard`, and output ends with `Dry-run complete; torchrun was not started.`
+Expected: the shadow launcher's real preflight succeeds, the recording stub exits zero, and its captured arguments include `--logger tensorboard` plus the production metrics directory.
 
 - [ ] **Step 4: Confirm repository state and document how to view metrics**
 

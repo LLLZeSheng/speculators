@@ -17,13 +17,13 @@ does not automatically start the full eight-GPU training job.
 
 TensorBoard is installed into
 `/mnt/paas/spec_train/speculators_venv`. The launcher defaults change from
-`/mnt/pass/miniconda3/bin/python3.13` and its `torchrun` to:
+the obsolete `/mnt/pass/miniconda3` runtime to:
 
 - `/mnt/paas/spec_train/speculators_venv/bin/python`
 - `/mnt/paas/spec_train/speculators_venv/bin/torchrun`
 
-The existing `GLM52_PYTHON_BIN` and `GLM52_TORCHRUN_BIN` environment-variable
-overrides remain available.
+The current production launcher uses fixed paths rather than environment-variable
+overrides, so the update changes only those two fixed assignments.
 
 ## Launcher Integration
 
@@ -48,9 +48,10 @@ Validation does not launch the full training job. It consists of:
 
 1. Checking the virtual environment dependency graph after TensorBoard install.
 2. Importing `tensorboard` and `torch.utils.tensorboard.SummaryWriter`.
-3. Running the launcher with `--dry-run` and confirming the rendered training
-   command uses the dedicated virtual environment and includes
-   `--logger tensorboard`.
+3. Running a temporary shadow copy of the launcher with a recording `torchrun`
+   stub and confirming its real preflight passes and the recorded command includes
+   `--logger tensorboard`; the production launcher itself is not invoked to start
+   training.
 4. Exercising Speculators' real `setup_metric_logger` path with a temporary run
    name, emitting a scalar at a known step, and closing the handlers.
 5. Reading the generated event file with TensorBoard's event accumulator and
