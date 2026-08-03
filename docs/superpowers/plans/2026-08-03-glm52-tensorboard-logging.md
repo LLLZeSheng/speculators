@@ -28,8 +28,8 @@
 - Read: `/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh`
 
 **Interfaces:**
-- Consumes: The current launcher text.
-- Produces: A reproducible shell contract that requires the dedicated Python and torchrun paths plus `--logger tensorboard`.
+- Consumes: The launcher's real `--dry-run` behavior and rendered training command.
+- Produces: A reproducible shell contract that requires the dedicated torchrun path plus `--logger tensorboard` without starting training.
 
 - [ ] **Step 1: Create the launcher contract test**
 
@@ -37,16 +37,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 launcher=/mnt/paas/spec_train/train_glm5.2_dspark_h200.sh
-grep -Fq 'GLM52_PYTHON_BIN:-/mnt/paas/spec_train/speculators_venv/bin/python' "$launcher"
-grep -Fq 'GLM52_TORCHRUN_BIN:-/mnt/paas/spec_train/speculators_venv/bin/torchrun' "$launcher"
-grep -Eq '^[[:space:]]+--logger[[:space:]]+tensorboard$' "$launcher"
+output_file=/tmp/glm52_tensorboard_launcher_dry_run.out
+"$launcher" --dry-run >"$output_file" 2>&1
+grep -Fq '/mnt/paas/spec_train/speculators_venv/bin/torchrun' "$output_file"
+grep -Fq -- '--logger tensorboard' "$output_file"
+grep -Fq 'Dry-run complete; torchrun was not started.' "$output_file"
+if grep -Fq 'Starting full GLM-5.2 DSpark training' "$output_file"; then
+  echo 'dry-run unexpectedly started training' >&2
+  exit 1
+fi
 ```
 
 - [ ] **Step 2: Run the contract test and verify the pre-change failure**
 
 Run: `bash /tmp/test_glm52_tensorboard_launcher.sh`
 
-Expected: non-zero exit because the current launcher points to `/mnt/pass/miniconda3` and contains no `--logger tensorboard` argument.
+Expected: non-zero exit because the rendered command uses `/mnt/pass/miniconda3/bin/torchrun` and contains no `--logger tensorboard` argument.
 
 ### Task 2: Install the TensorBoard Runtime
 
