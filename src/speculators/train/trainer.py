@@ -421,7 +421,7 @@ class Trainer:
             )
         return skip_steps
 
-    def train_epoch(self, epoch: int):
+    def train_epoch(self, epoch: int):  # noqa: C901 - safety guards are explicit
         self.model.train()
         if hasattr(self.train_loader.batch_sampler, "set_epoch"):
             self.train_loader.batch_sampler.set_epoch(epoch)  # type: ignore[union-attr]
