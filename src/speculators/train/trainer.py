@@ -661,6 +661,16 @@ class Trainer:
             if self.is_distributed:
                 dist.barrier()
 
+            if (
+                self.config.max_steps is not None
+                and self.global_step >= self.config.max_steps
+            ):
+                root_logger.info(
+                    "Reached max_steps=%d; ending the run before validation",
+                    self.config.max_steps,
+                )
+                break
+
             val_metrics = None
 
             if self.val_loader is None:
