@@ -172,7 +172,11 @@ def compute_metrics(
                 ).sum()
                 metrics[f"accept_len_ctx_{label}_total"] = bucket_valid.sum()
                 metrics[f"anchor_fraction_ctx_{label}_sum"] = bucket_valid.sum()
-                metrics[f"anchor_fraction_ctx_{label}_total"] = valid_anchor_total
+                # dist.reduce is in-place. Each metric key must own its tensor;
+                # reusing one denominator object would reduce it four times.
+                metrics[f"anchor_fraction_ctx_{label}_total"] = (
+                    valid_anchor_total.clone()
+                )
 
     # Per-position greedy accuracy
     pred_ids = torch.argmax(logits, dim=-1)

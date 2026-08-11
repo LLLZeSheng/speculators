@@ -238,6 +238,12 @@ class TestComputeMetrics:
             assert abs(float(accept_len) - expected) < 1e-2
             assert abs(float(fraction) - 0.25) < 1e-6
 
+        fraction_totals = [
+            metrics[f"anchor_fraction_ctx_{label}_total"]
+            for label in expected_lengths
+        ]
+        assert len({id(total) for total in fraction_totals}) == len(fraction_totals)
+
     def test_context_metrics_exclude_padded_anchor_blocks(self):
         ids = torch.tensor([[0, 1, 0, 0]])
         logits = _ids_to_logits(ids, 8)
