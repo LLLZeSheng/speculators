@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 from datasets import Dataset
 from safetensors.torch import save_file
@@ -489,6 +490,65 @@ def test_arrow_dataset_default_train_ratio_does_not_crash(tmp_path: Path):
     # Should not raise AttributeError
     assert arrow_ds._map_to_file_idx(0) == 0
     assert arrow_ds._map_to_file_idx(5) == 5
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -float("inf")])
+def test_arrow_dataset_skips_nonfinite_cached_hidden_states(
+    tmp_path: Path, bad_value: float
+):
+    data_path = tmp_path / "data"
+    source_index = 42
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3]],
+            "loss_mask": [[1, 1, 1]],
+            "seq_len": [3],
+            "source_index": [source_index],
+        }
+    )
+    ds.save_to_disk(str(data_path))
+    hidden_states_path = data_path / "hidden_states"
+    hidden_states_path.mkdir()
+    hidden_states = torch.zeros(3, 2, 4)
+    hidden_states[1, 0, 0] = bad_value
+    save_file(
+        {
+            "token_ids": torch.tensor([1, 2, 3]),
+            "hidden_states": hidden_states,
+        },
+        hidden_states_path / f"hs_{source_index}.safetensors",
+    )
+    arrow_ds = ArrowDataset(
+        max_len=128,
+        datapath=data_path,
+        on_missing="raise",
+    )
+
+    with pytest.warns(UserWarning, match="Invalid cached hidden states"):
+        assert arrow_ds[0] is None
+
+
+def test_arrow_dataset_skips_unreadable_cached_hidden_states(tmp_path: Path):
+    data_path = tmp_path / "data"
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3]],
+            "loss_mask": [[1, 1, 1]],
+            "seq_len": [3],
+        }
+    )
+    ds.save_to_disk(str(data_path))
+    hidden_states_path = data_path / "hidden_states"
+    hidden_states_path.mkdir()
+    (hidden_states_path / "hs_0.safetensors").write_bytes(b"not-safetensors")
+    arrow_ds = ArrowDataset(
+        max_len=128,
+        datapath=data_path,
+        on_missing="raise",
+    )
+
+    with pytest.warns(UserWarning, match="Failed to read cached hidden states"):
+        assert arrow_ds[0] is None
 
 
 def test_arrow_dataset_on_generate_cache_creates_hidden_states_dir(tmp_path: Path):

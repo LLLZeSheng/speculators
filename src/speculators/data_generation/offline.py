@@ -1,21 +1,62 @@
 import logging
 from pathlib import Path
 
+import torch
+
 logger = logging.getLogger(__name__)
+_MIN_HIDDEN_STATES_NDIM = 2
 
 
-def check_hidden_states(data: dict, tokens: list[int]):
-    t_ids = data["token_ids"].tolist()
-    if t_ids != tokens:
-        raise ValueError(f"Token ids don't match expected token ids {tokens}")
+def check_hidden_states(data: dict, tokens: list[int]) -> None:
+    """Validate one hidden-state payload before it is cached or trained on."""
+    required = {"token_ids", "hidden_states"}
+    missing = required - data.keys()
+    if missing:
+        raise ValueError(f"Hidden-state payload is missing keys: {sorted(missing)}")
 
-    hs = data["hidden_states"]
-    if hs.isnan().any():
-        raise ValueError("Hidden states contain NaN values")
-    if len(tokens) != hs.shape[0]:
+    token_ids = data["token_ids"]
+    hidden_states = data["hidden_states"]
+    if not isinstance(token_ids, torch.Tensor):
+        raise ValueError("token_ids must be a torch.Tensor")
+    if not isinstance(hidden_states, torch.Tensor):
+        raise ValueError("hidden_states must be a torch.Tensor")
+    if token_ids.ndim != 1:
+        raise ValueError(f"token_ids must be 1-D, got shape {tuple(token_ids.shape)}")
+    if hidden_states.ndim < _MIN_HIDDEN_STATES_NDIM:
         raise ValueError(
-            f"Sequence length of hidden states {hs.shape[0]}"
+            f"hidden_states must have at least 2 dimensions, got "
+            f"shape {tuple(hidden_states.shape)}"
+        )
+    if not hidden_states.is_floating_point():
+        raise ValueError(
+            f"hidden_states must be floating point, got {hidden_states.dtype}"
+        )
+
+    expected_token_ids = torch.as_tensor(
+        tokens, dtype=token_ids.dtype, device=token_ids.device
+    )
+    if token_ids.shape != expected_token_ids.shape or not torch.equal(
+        token_ids, expected_token_ids
+    ):
+        raise ValueError(
+            "Token ids don't match the expected input "
+            f"(actual shape={tuple(token_ids.shape)}, "
+            f"expected shape={tuple(expected_token_ids.shape)})"
+        )
+
+    if len(tokens) != hidden_states.shape[0]:
+        raise ValueError(
+            f"Sequence length of hidden states {hidden_states.shape[0]}"
             f" doesn't match num tokens {len(tokens)}"
+        )
+
+    if not torch.isfinite(hidden_states).all().item():
+        nan_count = int(torch.isnan(hidden_states).sum().item())
+        posinf_count = int(torch.isposinf(hidden_states).sum().item())
+        neginf_count = int(torch.isneginf(hidden_states).sum().item())
+        raise ValueError(
+            "Hidden states contain non-finite values: "
+            f"NaN={nan_count}, +Inf={posinf_count}, -Inf={neginf_count}"
         )
 
 

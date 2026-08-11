@@ -1,7 +1,55 @@
+import pytest
+import torch
+
 from speculators.data_generation.offline import (
+    check_hidden_states,
     get_existing_hidden_state_indices,
     get_indices_to_process,
 )
+
+
+def test_check_hidden_states_accepts_finite_payload():
+    payload = {
+        "token_ids": torch.tensor([1, 2, 3]),
+        "hidden_states": torch.zeros(3, 2, 4, dtype=torch.bfloat16),
+    }
+
+    check_hidden_states(payload, [1, 2, 3])
+
+
+@pytest.mark.parametrize(
+    ("bad_value", "expected"),
+    [
+        (float("nan"), "NaN=1"),
+        (float("inf"), r"\+Inf=1"),
+        (-float("inf"), "-Inf=1"),
+    ],
+)
+def test_check_hidden_states_rejects_every_nonfinite_value(bad_value, expected):
+    hidden_states = torch.zeros(3, 2, 4)
+    hidden_states[1, 0, 0] = bad_value
+    payload = {
+        "token_ids": torch.tensor([1, 2, 3]),
+        "hidden_states": hidden_states,
+    }
+
+    with pytest.raises(ValueError, match=expected):
+        check_hidden_states(payload, [1, 2, 3])
+
+
+def test_check_hidden_states_rejects_token_or_length_mismatch():
+    payload = {
+        "token_ids": torch.tensor([1, 2, 4]),
+        "hidden_states": torch.zeros(3, 2, 4),
+    }
+    with pytest.raises(ValueError, match="Token ids"):
+        check_hidden_states(payload, [1, 2, 3])
+
+    payload["token_ids"] = torch.tensor([1, 2, 3])
+    payload["hidden_states"] = torch.zeros(2, 2, 4)
+    with pytest.raises(ValueError, match="Sequence length"):
+        check_hidden_states(payload, [1, 2, 3])
+
 
 # ===== get_indices_to_process Tests =====
 

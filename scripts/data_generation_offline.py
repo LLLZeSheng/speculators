@@ -126,10 +126,11 @@ def parse_args():
     )
     parser.add_argument(
         "--validate-outputs",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Load generated safetensor files and check output token ids match "
-            "prompt tokens and hidden states seq_len matches num tokens"
+            "Validate token ids, shape, and finite hidden-state values before "
+            "atomically publishing each file (default: enabled)"
         ),
     )
     parser.add_argument(
@@ -192,7 +193,36 @@ def parse_args():
     return parser.parse_args()
 
 
-async def worker(  # noqa: C901
+def _validate_and_commit_hidden_states(
+    generated_path: str | Path,
+    target_path: Path,
+    tokens: list[int],
+    validate_outputs: bool,
+) -> None:
+    """Validate a generated file and atomically publish it to its final name.
+
+    The final ``hs_<index>.safetensors`` path is never visible until validation
+    and any cross-filesystem copy have completed. Failed inputs and partial
+    staging files are removed so the sample remains eligible on the next run.
+    """
+    source = Path(generated_path)
+    staged = target_path.with_name(f".{target_path.name}.partial")
+    try:
+        if validate_outputs:
+            loaded = load_file(source)
+            check_hidden_states(loaded, tokens)
+
+        staged.unlink(missing_ok=True)
+        shutil.move(str(source), str(staged))
+        os.replace(staged, target_path)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        source.unlink(missing_ok=True)
+        Path(f"{source}.lock").unlink(missing_ok=True)
+        raise
+
+
+async def worker(
     client,
     model: str,
     queue: "asyncio.Queue[dict[str, Any]]",
@@ -235,22 +265,19 @@ async def worker(  # noqa: C901
                 )
             lock_path = hidden_states_path + ".lock"
             if Path(lock_path).exists():  # noqa: ASYNC240
-                await wait_for_lock_async(lock_path)
+                await wait_for_lock_async(
+                    lock_path,
+                    timeout=request_timeout if request_timeout is not None else 600,
+                )
 
             async with write_semaphore:  # Limit number of active disk writes
                 await asyncio.to_thread(
-                    shutil.move, hidden_states_path, target_hidden_states_path
+                    _validate_and_commit_hidden_states,
+                    hidden_states_path,
+                    target_hidden_states_path,
+                    item["input_ids"],
+                    validate_outputs,
                 )
-                if validate_outputs:
-
-                    def _load_and_check(
-                        path=target_hidden_states_path,
-                        tokens=item["input_ids"],
-                    ):
-                        loaded = load_file(path)
-                        check_hidden_states(loaded, tokens)
-
-                    await asyncio.to_thread(_load_and_check)
         except Exception as e:
             if fail_on_error:
                 logger.exception(

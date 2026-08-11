@@ -114,6 +114,12 @@ def _has_multimodal_content(messages: list[dict]) -> bool:
     return any(isinstance(m.get("content"), list) for m in messages)
 
 
+def _as_token_list(input_ids: Any) -> list[int]:
+    """Normalize HF list/array/tensor token columns to plain Python integers."""
+    values = input_ids.tolist() if hasattr(input_ids, "tolist") else input_ids
+    return [int(token_id) for token_id in values]
+
+
 def build_client_item(dataset_item: dict) -> ClientItem:
     """Build a request payload for vLLM hidden-state extraction.
 
@@ -136,7 +142,7 @@ def build_client_item(dataset_item: dict) -> ClientItem:
     Text-only EAGLE-3 models (e.g. Llama) use a plain tokenizer, so
     ``messages`` is never created and this guard is a no-op.
     """
-    out_dict: dict = {"input_ids": dataset_item["input_ids"].tolist()}
+    out_dict: dict = {"input_ids": _as_token_list(dataset_item["input_ids"])}
 
     if "messages" in dataset_item and _has_multimodal_content(dataset_item["messages"]):
         out_dict["messages"] = dataset_item["messages"]
@@ -235,6 +241,17 @@ class ArrowDataset(BaseDataset):
             )
         self.start_file_idx = start
         self.data = self.data.select(range(start, stop))
+        self._source_file_indices: list[int] | None = None
+        if "source_index" in self.data.column_names:
+            # Filtered HuggingFace datasets are re-numbered from zero while the
+            # cached hidden-state files retain their original hs_<index> names.
+            # Materialize the mapping once so every lookup is both correct and O(1).
+            raw_source_indices = self.data.with_format(None)["source_index"]
+            self._source_file_indices = [int(i) for i in raw_source_indices]
+            if len(self._source_file_indices) != len(self.data):
+                raise ValueError("source_index length doesn't match dataset length")
+            if any(i < 0 for i in self._source_file_indices):
+                raise ValueError("source_index values must be non-negative")
 
         self.transfer = transfer or FileTransfer(Path(datapath) / "hidden_states")
         self.vllm_endpoint = vllm_endpoint
@@ -249,6 +266,8 @@ class ArrowDataset(BaseDataset):
         super().__init__(max_len, transform, hidden_states_dtype)
 
     def _map_to_file_idx(self, index: int):
+        if self._source_file_indices is not None:
+            return self._source_file_indices[index]
         return index + self.start_file_idx
 
     def _setup_client(self):
@@ -279,6 +298,7 @@ class ArrowDataset(BaseDataset):
 
         dataset_item = self.data[index]
         client_item = build_client_item(dataset_item)
+        handle: str | None = None
 
         try:
             handle = generate_hidden_states(
@@ -293,7 +313,7 @@ class ArrowDataset(BaseDataset):
             if loaded_hs is None:
                 raise ValueError(f"Failed to load hidden states for handle {handle}")
 
-            check_hidden_states(loaded_hs, dataset_item["input_ids"].tolist())
+            check_hidden_states(loaded_hs, _as_token_list(dataset_item["input_ids"]))
 
             file_idx = self._map_to_file_idx(index)
             match self.on_generate:
@@ -301,11 +321,20 @@ class ArrowDataset(BaseDataset):
                     self.transfer.cache(handle, file_idx)
                 case "delete":
                     self.transfer.delete(handle)
-        except Exception as e:
-            if isinstance(e, ValueError) and "NaN" in str(e):
-                raise
+        except Exception as e:  # noqa: BLE001 - sample boundary must not kill training
+            if handle is not None:
+                try:
+                    self.transfer.delete(handle)
+                except FileNotFoundError:
+                    pass
+                except Exception as cleanup_error:  # noqa: BLE001
+                    warnings.warn(
+                        f"Failed to remove invalid generated hidden states for "
+                        f"sample {index}: {cleanup_error}",
+                        stacklevel=1,
+                    )
             warnings.warn(
-                f"Failed to load/cache hidden states for sample {index}: {e}",
+                f"Invalid generated hidden states for sample {index}: {e}. Skipping...",
                 stacklevel=1,
             )
             return None
@@ -314,7 +343,15 @@ class ArrowDataset(BaseDataset):
 
     def _get_raw_data(self, index):
         file_idx = self._map_to_file_idx(index)
-        loaded_hs = self.transfer.get_cached(file_idx)
+        try:
+            loaded_hs = self.transfer.get_cached(file_idx)
+        except Exception as e:  # noqa: BLE001 - corrupt cache entry is skippable
+            warnings.warn(
+                f"Failed to read cached hidden states for sample {index} "
+                f"(hs_{file_idx}.safetensors): {e}. Skipping...",
+                stacklevel=1,
+            )
+            return None
 
         if loaded_hs is None:
             match self.on_missing:
@@ -341,10 +378,13 @@ class ArrowDataset(BaseDataset):
         #   "token_ids": [seq_len]
         # }
 
-        if not torch.equal(loaded_hs["token_ids"], self.data[index]["input_ids"]):
+        expected_tokens = _as_token_list(self.data[index]["input_ids"])
+        try:
+            check_hidden_states(loaded_hs, expected_tokens)
+        except Exception as e:  # noqa: BLE001 - reject any invalid payload
             warnings.warn(
-                f"Loaded token ids {loaded_hs['token_ids']} for index {index} don't"
-                f"match input ids {self.data[index]['input_ids']}",
+                f"Invalid cached hidden states for sample {index} "
+                f"(hs_{file_idx}.safetensors): {e}. Skipping...",
                 stacklevel=1,
             )
             return None
