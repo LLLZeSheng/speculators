@@ -98,6 +98,13 @@ MIN_STEP_PCT = 0.25
 _VAL_SYNC_INTERVAL = 50
 
 
+def _replicated_finite_flag(value: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Return an ordinary replicated int flag, even when *value* is a DTensor."""
+    local_value = value.to_local() if hasattr(value, "to_local") else value
+    is_finite = bool(torch.isfinite(local_value.detach()).all().item())
+    return torch.tensor(is_finite, dtype=torch.int32, device=device)
+
+
 class TrainerConfig(NamedTuple):
     lr: float
     num_epochs: int
@@ -466,7 +473,7 @@ class Trainer:
 
             timer.mark("fwd")
             self._optimizers_zero_grad()
-            loss_finite = torch.isfinite(loss.detach()).to(torch.int32)
+            loss_finite = _replicated_finite_flag(loss, loss.device)
             if self.is_distributed:
                 dist.all_reduce(loss_finite, op=dist.ReduceOp.MIN)
             if not bool(loss_finite.item()):
@@ -481,7 +488,7 @@ class Trainer:
 
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            grad_finite = torch.isfinite(grad_norm.detach()).to(torch.int32)
+            grad_finite = _replicated_finite_flag(grad_norm, loss.device)
             if self.is_distributed:
                 dist.all_reduce(grad_finite, op=dist.ReduceOp.MIN)
             if not bool(grad_finite.item()):
