@@ -484,8 +484,18 @@ class Trainer:
                 num_tokens = int((gpu_batch["document_ids"] != -1).sum().item())
                 profile = timer.profile(num_tokens)
                 if self.is_distributed:
-                    for v in metrics.values():
-                        dist.reduce(v, dst=0, op=dist.ReduceOp.SUM)
+                    # Reduce one packed tensor instead of mutating each metric
+                    # separately. Compiled model outputs may alias equal scalar
+                    # tensors; repeated in-place reductions would then count the
+                    # same denominator more than once.
+                    metric_keys = list(metrics)
+                    metric_values = torch.stack(
+                        [metrics[key].float() for key in metric_keys]
+                    )
+                    dist.reduce(metric_values, dst=0, op=dist.ReduceOp.SUM)
+                    metrics = dict(
+                        zip(metric_keys, metric_values.unbind(), strict=True)
+                    )
 
                 metrics = {k: v.item() for k, v in metrics.items()}
                 world_size = dist.get_world_size() if self.is_distributed else 1
