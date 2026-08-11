@@ -190,3 +190,68 @@ class TestComputeMetrics:
             assert key in metrics
         # all metric values must be tensors (so dist.reduce works in the trainer)
         assert all(torch.is_tensor(v) for v in metrics.values())
+
+    def test_context_bucket_acceptance_and_anchor_fractions(self):
+        # Four two-token blocks, one anchor at the start of each 8K context bucket.
+        target_ids = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]])
+        draft_ids = torch.tensor(
+            [
+                [
+                    0,
+                    1,  # 0-8K: both accepted -> length 3
+                    8,
+                    3,  # 8-16K: first rejected -> length 1
+                    4,
+                    8,  # 16-24K: first accepted -> length 2
+                    6,
+                    7,  # 24-32K: both accepted -> length 3
+                ]
+            ]
+        )
+        logits = _ids_to_logits(draft_ids, 16)
+        targets = _ids_to_logits(target_ids, 16)
+        _, metrics = compute_metrics(
+            logits,
+            targets,
+            None,
+            torch.ones(1, 8),
+            block_size=2,
+            loss_config=_DEFAULT_LOSS,
+            anchor_context_positions=torch.tensor([0, 8192, 16384, 24576]),
+        )
+
+        expected_lengths = {
+            "0_8k": 3.0,
+            "8_16k": 1.0,
+            "16_24k": 2.0,
+            "24_32k": 3.0,
+        }
+        for label, expected in expected_lengths.items():
+            accept_len = (
+                metrics[f"accept_len_ctx_{label}_sum"]
+                / metrics[f"accept_len_ctx_{label}_total"]
+            )
+            fraction = (
+                metrics[f"anchor_fraction_ctx_{label}_sum"]
+                / metrics[f"anchor_fraction_ctx_{label}_total"]
+            )
+            assert abs(float(accept_len) - expected) < 1e-2
+            assert abs(float(fraction) - 0.25) < 1e-6
+
+    def test_context_metrics_exclude_padded_anchor_blocks(self):
+        ids = torch.tensor([[0, 1, 0, 0]])
+        logits = _ids_to_logits(ids, 8)
+        _, metrics = compute_metrics(
+            logits,
+            logits.clone(),
+            None,
+            torch.tensor([[1, 1, 0, 0]], dtype=torch.float32),
+            block_size=2,
+            loss_config=_DEFAULT_LOSS,
+            anchor_context_positions=torch.tensor([100, 20000]),
+        )
+
+        assert float(metrics["anchor_fraction_ctx_0_8k_sum"]) == 1.0
+        assert float(metrics["anchor_fraction_ctx_0_8k_total"]) == 1.0
+        assert float(metrics["anchor_fraction_ctx_16_24k_sum"]) == 0.0
+        assert float(metrics["accept_len_ctx_16_24k_total"]) == 0.0

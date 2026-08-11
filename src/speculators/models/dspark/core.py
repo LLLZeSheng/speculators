@@ -218,6 +218,13 @@ class DSparkDraftModel(DFlashDraftModel):
                 1, mask_tokens_size
             )
 
+        anchor_positions = anchored_block_indices.view(num_blocks, block)[:, 0]
+        anchor_context_positions = (
+            anchor_positions
+            if position_ids is None
+            else position_ids[0, anchor_positions]
+        )
+
         loss, metrics = compute_metrics(
             logits,
             targets,
@@ -230,5 +237,6 @@ class DSparkDraftModel(DFlashDraftModel):
             per_position_loss_weight=per_position_loss_weight,
             dpace_alpha=dpace_alpha,
             sample_from_anchor=self.config.sample_from_anchor,
+            anchor_context_positions=anchor_context_positions,
         )
         return None, loss, metrics

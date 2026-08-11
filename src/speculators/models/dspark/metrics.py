@@ -26,6 +26,12 @@ __all__ = [
 ]
 
 _EPS = 1e-8
+_CONTEXT_BUCKETS = (
+    (0, 8192, "0_8k"),
+    (8192, 16384, "8_16k"),
+    (16384, 24576, "16_24k"),
+    (24576, 32768, "24_32k"),
+)
 
 
 def _masked_decayed_mean(
@@ -57,6 +63,7 @@ def compute_metrics(
     per_position_loss_weight: str = "fixed-exp-decay",
     dpace_alpha: float = 0.5,
     sample_from_anchor: bool = True,
+    anchor_context_positions: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -146,6 +153,26 @@ def compute_metrics(
         block_valid = (draft_mask.sum(dim=-1) > 0).to(accept_rate.dtype)
         metrics["accept_len_sum"] = (per_block_len * block_valid).sum()
         metrics["accept_len_total"] = block_valid.sum().clamp_min(1.0)
+
+        if anchor_context_positions is not None:
+            if anchor_context_positions.shape != (num_blocks,):
+                raise ValueError(
+                    "anchor_context_positions must have one value per block; got "
+                    f"{tuple(anchor_context_positions.shape)} for {num_blocks} blocks"
+                )
+            valid_anchor_total = block_valid.sum()
+            for lower, upper, label in _CONTEXT_BUCKETS:
+                in_bucket = (
+                    (anchor_context_positions >= lower)
+                    & (anchor_context_positions < upper)
+                ).to(accept_rate.dtype)
+                bucket_valid = in_bucket * block_valid
+                metrics[f"accept_len_ctx_{label}_sum"] = (
+                    per_block_len * bucket_valid
+                ).sum()
+                metrics[f"accept_len_ctx_{label}_total"] = bucket_valid.sum()
+                metrics[f"anchor_fraction_ctx_{label}_sum"] = bucket_valid.sum()
+                metrics[f"anchor_fraction_ctx_{label}_total"] = valid_anchor_total
 
     # Per-position greedy accuracy
     pred_ids = torch.argmax(logits, dim=-1)
