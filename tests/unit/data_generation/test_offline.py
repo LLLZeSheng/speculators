@@ -51,6 +51,18 @@ def test_check_hidden_states_rejects_token_or_length_mismatch():
         check_hidden_states(payload, [1, 2, 3])
 
 
+def test_check_hidden_states_can_skip_only_the_finite_scan():
+    payload = {
+        "token_ids": torch.tensor([1, 2, 3]),
+        "hidden_states": torch.tensor([[[0.0]], [[float("nan")]], [[0.0]]]),
+    }
+
+    check_hidden_states(payload, [1, 2, 3], check_finite=False)
+
+    with pytest.raises(ValueError, match="Token ids"):
+        check_hidden_states(payload, [1, 2, 4], check_finite=False)
+
+
 # ===== get_indices_to_process Tests =====
 
 

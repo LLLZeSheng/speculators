@@ -235,6 +235,12 @@ class DataArgs(_Group):
     )
     num_workers: int = Field(default=12, description="Number of dataloader workers.")
     prefetch_factor: int = Field(default=4, description="Dataloader prefetch factor.")
+    validate_cached_hidden_states_finite: bool = Field(
+        default=True,
+        description="Check every cached hidden-state tensor for NaN and Inf in the "
+        "DataLoader. Disable only when the dataset was filtered separately and the "
+        "trainer's synchronized non-finite loss/gradient guards are enabled.",
+    )
     max_anchors: int = Field(
         default=3072,
         description="Maximum anchor positions for DFlash, DSpark, and P-EAGLE training "

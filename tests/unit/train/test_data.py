@@ -528,6 +528,41 @@ def test_arrow_dataset_skips_nonfinite_cached_hidden_states(
         assert arrow_ds[0] is None
 
 
+def test_arrow_dataset_can_skip_cached_finite_scan(tmp_path: Path):
+    data_path = tmp_path / "data"
+    source_index = 42
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3]],
+            "loss_mask": [[1, 1, 1]],
+            "seq_len": [3],
+            "source_index": [source_index],
+        }
+    )
+    ds.save_to_disk(str(data_path))
+    hidden_states_path = data_path / "hidden_states"
+    hidden_states_path.mkdir()
+    hidden_states = torch.zeros(3, 2, 4)
+    hidden_states[1, 0, 0] = float("nan")
+    save_file(
+        {
+            "token_ids": torch.tensor([1, 2, 3]),
+            "hidden_states": hidden_states,
+        },
+        hidden_states_path / f"hs_{source_index}.safetensors",
+    )
+    arrow_ds = ArrowDataset(
+        max_len=128,
+        datapath=data_path,
+        on_missing="raise",
+        validate_cached_hidden_states_finite=False,
+    )
+
+    sample = arrow_ds[0]
+    assert sample is not None
+    assert torch.isnan(sample["hidden_states"]).any()
+
+
 def test_arrow_dataset_skips_unreadable_cached_hidden_states(tmp_path: Path):
     data_path = tmp_path / "data"
     ds = Dataset.from_dict(

@@ -466,8 +466,34 @@ class Trainer:
 
             timer.mark("fwd")
             self._optimizers_zero_grad()
+            loss_finite = torch.isfinite(loss.detach()).to(torch.int32)
+            if self.is_distributed:
+                dist.all_reduce(loss_finite, op=dist.ReduceOp.MIN)
+            if not bool(loss_finite.item()):
+                if self.rank == 0:
+                    root_logger.warning(
+                        "Skipping a training batch because at least one rank "
+                        "produced a non-finite loss. No optimizer or scheduler "
+                        "step was performed."
+                    )
+                t_before_fetch = timer.now() or time.perf_counter()
+                continue
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_finite = torch.isfinite(grad_norm.detach()).to(torch.int32)
+            if self.is_distributed:
+                dist.all_reduce(grad_finite, op=dist.ReduceOp.MIN)
+            if not bool(grad_finite.item()):
+                self._optimizers_zero_grad()
+                if self.rank == 0:
+                    root_logger.warning(
+                        "Skipping a training batch because at least one rank "
+                        "produced a non-finite gradient norm. No optimizer or "
+                        "scheduler step was performed."
+                    )
+                t_before_fetch = timer.now() or time.perf_counter()
+                continue
 
             timer.mark("bwd")
             self._optimizers_step()

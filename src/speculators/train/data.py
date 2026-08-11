@@ -221,6 +221,7 @@ class ArrowDataset(BaseDataset):
         model: str | None = None,
         request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        validate_cached_hidden_states_finite: bool = True,
     ):
         self.data = load_from_disk(datapath)
         if not 0.0 < train_ratio <= 1.0:
@@ -261,6 +262,9 @@ class ArrowDataset(BaseDataset):
         self.model = model
         self.request_timeout = request_timeout
         self.max_retries = max_retries
+        self.validate_cached_hidden_states_finite = (
+            validate_cached_hidden_states_finite
+        )
 
         # Delay super init so that `_compute_approx_lengths` has required data
         super().__init__(max_len, transform, hidden_states_dtype)
@@ -380,7 +384,11 @@ class ArrowDataset(BaseDataset):
 
         expected_tokens = _as_token_list(self.data[index]["input_ids"])
         try:
-            check_hidden_states(loaded_hs, expected_tokens)
+            check_hidden_states(
+                loaded_hs,
+                expected_tokens,
+                check_finite=self.validate_cached_hidden_states_finite,
+            )
         except Exception as e:  # noqa: BLE001 - reject any invalid payload
             warnings.warn(
                 f"Invalid cached hidden states for sample {index} "
