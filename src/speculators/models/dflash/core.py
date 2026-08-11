@@ -241,6 +241,14 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             "per_position_loss_weight", "fixed-exp-decay"
         )
         dpace_alpha = kwargs.get("dpace_alpha", 0.5)
+        anchor_sampling = kwargs.get("anchor_sampling", "uniform")
+        anchor_tail_fraction = kwargs.get("anchor_tail_fraction", 0.5)
+        anchor_position_boundaries = kwargs.get(
+            "anchor_position_boundaries", [8192, 16384, 24576]
+        )
+        anchor_position_weights = kwargs.get(
+            "anchor_position_weights", [1.0, 2.0, 6.0, 12.0]
+        )
         shared = {
             "loss_config": loss_config,
             "gamma": gamma,
@@ -248,7 +256,17 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             "per_position_loss_weight": per_position_loss_weight,
             "dpace_alpha": dpace_alpha,
         }
-        return dict(shared), dict(shared)
+        train_kwargs = {
+            **shared,
+            "anchor_sampling": anchor_sampling,
+            "anchor_tail_fraction": anchor_tail_fraction,
+            "anchor_position_boundaries": anchor_position_boundaries,
+            "anchor_position_weights": anchor_position_weights,
+        }
+        # Keep validation sampling uniform so its metrics remain comparable with
+        # historical runs, regardless of the training sampler.
+        val_kwargs = {**train_kwargs, "anchor_sampling": "uniform"}
+        return train_kwargs, val_kwargs
 
     @property
     def mask_token_id(self) -> int:
@@ -288,11 +306,30 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         )
 
     @torch.compiler.disable
-    def _build_attention_mask(self, loss_mask, max_anchors, document_ids, device):
+    def _build_attention_mask(
+        self,
+        loss_mask,
+        max_anchors,
+        document_ids,
+        position_ids,
+        device,
+        *,
+        anchor_sampling="uniform",
+        anchor_tail_fraction=0.5,
+        anchor_position_boundaries=(8192, 16384, 24576),
+        anchor_position_weights=(1.0, 2.0, 6.0, 12.0),
+    ):
         total_seq_len = loss_mask.shape[1]
 
         anchor_positions, anchor_valid = select_anchors(
-            loss_mask, max_anchors, self.block_size
+            loss_mask,
+            max_anchors,
+            self.block_size,
+            position_ids=position_ids,
+            sampling=anchor_sampling,
+            tail_fraction=anchor_tail_fraction,
+            position_boundaries=anchor_position_boundaries,
+            position_weights=anchor_position_weights,
         )
 
         full_attn_mask = None
@@ -337,6 +374,14 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         device = hidden_states.device
         total_seq_len = hidden_states.shape[1]
         num_anchors = kwargs.pop("max_anchors", 3072)
+        anchor_sampling = kwargs.pop("anchor_sampling", "uniform")
+        anchor_tail_fraction = kwargs.pop("anchor_tail_fraction", 0.5)
+        anchor_position_boundaries = kwargs.pop(
+            "anchor_position_boundaries", (8192, 16384, 24576)
+        )
+        anchor_position_weights = kwargs.pop(
+            "anchor_position_weights", (1.0, 2.0, 6.0, 12.0)
+        )
 
         if position_ids is None:
             position_ids = torch.arange(
@@ -344,7 +389,17 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             ).unsqueeze(0)
 
         full_attn_mask, sliding_window_attn_mask, anchor_positions, anchor_valid = (
-            self._build_attention_mask(loss_mask, num_anchors, document_ids, device)
+            self._build_attention_mask(
+                loss_mask,
+                num_anchors,
+                document_ids,
+                position_ids,
+                device,
+                anchor_sampling=anchor_sampling,
+                anchor_tail_fraction=anchor_tail_fraction,
+                anchor_position_boundaries=anchor_position_boundaries,
+                anchor_position_weights=anchor_position_weights,
+            )
         )
 
         mask_tokens_size = num_anchors * self.block_size
@@ -443,6 +498,19 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         max_anchors: int = 3072,
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
+        anchor_sampling: str = "uniform",
+        anchor_tail_fraction: float = 0.5,
+        anchor_position_boundaries: tuple[int, ...] | list[int] = (
+            8192,
+            16384,
+            24576,
+        ),
+        anchor_position_weights: tuple[float, ...] | list[float] = (
+            1.0,
+            2.0,
+            6.0,
+            12.0,
+        ),
         **kwargs,
     ):
         _, logits, targets, aligned_loss_mask, _ = self._backbone_forward(
@@ -453,6 +521,10 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             document_ids,
             position_ids,
             max_anchors=max_anchors,
+            anchor_sampling=anchor_sampling,
+            anchor_tail_fraction=anchor_tail_fraction,
+            anchor_position_boundaries=anchor_position_boundaries,
+            anchor_position_weights=anchor_position_weights,
             **kwargs,
         )
         loss, metrics = compute_metrics(

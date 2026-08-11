@@ -98,6 +98,14 @@ class DSparkDraftModel(DFlashDraftModel):
             "per_position_loss_weight", "fixed-exp-decay"
         )
         dpace_alpha = kwargs.get("dpace_alpha", 0.5)
+        anchor_sampling = kwargs.get("anchor_sampling", "uniform")
+        anchor_tail_fraction = kwargs.get("anchor_tail_fraction", 0.5)
+        anchor_position_boundaries = kwargs.get(
+            "anchor_position_boundaries", [8192, 16384, 24576]
+        )
+        anchor_position_weights = kwargs.get(
+            "anchor_position_weights", [1.0, 2.0, 6.0, 12.0]
+        )
         shared = {
             "loss_config": loss_config,
             "gamma": gamma,
@@ -106,7 +114,15 @@ class DSparkDraftModel(DFlashDraftModel):
             "per_position_loss_weight": per_position_loss_weight,
             "dpace_alpha": dpace_alpha,
         }
-        return dict(shared), dict(shared)
+        train_kwargs = {
+            **shared,
+            "anchor_sampling": anchor_sampling,
+            "anchor_tail_fraction": anchor_tail_fraction,
+            "anchor_position_boundaries": anchor_position_boundaries,
+            "anchor_position_weights": anchor_position_weights,
+        }
+        val_kwargs = {**train_kwargs, "anchor_sampling": "uniform"}
+        return train_kwargs, val_kwargs
 
     @conditional_torch_compile
     def forward(
@@ -123,6 +139,19 @@ class DSparkDraftModel(DFlashDraftModel):
         confidence_head_alpha: float = 1.0,
         per_position_loss_weight: str = "fixed-exp-decay",
         dpace_alpha: float = 0.5,
+        anchor_sampling: str = "uniform",
+        anchor_tail_fraction: float = 0.5,
+        anchor_position_boundaries: tuple[int, ...] | list[int] = (
+            8192,
+            16384,
+            24576,
+        ),
+        anchor_position_weights: tuple[float, ...] | list[float] = (
+            1.0,
+            2.0,
+            6.0,
+            12.0,
+        ),
         **kwargs,
     ):
         hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (
@@ -134,6 +163,10 @@ class DSparkDraftModel(DFlashDraftModel):
                 document_ids,
                 position_ids,
                 max_anchors=max_anchors,
+                anchor_sampling=anchor_sampling,
+                anchor_tail_fraction=anchor_tail_fraction,
+                anchor_position_boundaries=anchor_position_boundaries,
+                anchor_position_weights=anchor_position_weights,
                 **kwargs,
             )
         )

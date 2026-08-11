@@ -459,6 +459,27 @@ class DFlashArgs(_Group):
         description="Smoothing constant for the D-PACE loss (default: 0.5). Must be in "
         "(0, 1] when --per-position-loss-weight=dpace.",
     )
+    anchor_sampling: Literal["uniform", "long-context-mix"] = Field(
+        default="uniform",
+        description="Anchor sampler for DFlash/DSpark training. The default keeps "
+        "historical uniform sampling; long-context-mix combines uniform and "
+        "position-weighted sampling.",
+    )
+    anchor_tail_fraction: float = Field(
+        default=0.5,
+        description="Fraction of anchors drawn from the position-weighted part of "
+        "long-context-mix (default: 0.5).",
+    )
+    anchor_position_boundaries: list[int] = Field(
+        default_factory=lambda: [8192, 16384, 24576],
+        description="Per-document position boundaries for long-context anchor "
+        "sampling (default: 8192 16384 24576).",
+    )
+    anchor_position_weights: list[float] = Field(
+        default_factory=lambda: [1.0, 2.0, 6.0, 12.0],
+        description="Positive sampling weights for the position buckets; must have "
+        "one more value than --anchor-position-boundaries.",
+    )
 
 
 class DSparkArgs(_Group):
@@ -665,6 +686,37 @@ class TrainConfig(BaseSettings):
                 raise ValueError(
                     f"--dpace-alpha must be in (0, 1], got {self.dflash.dpace_alpha}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_anchor_sampling(self) -> "TrainConfig":
+        """Validate the opt-in long-context sampler configuration."""
+        dflash = self.dflash
+        if not 0.0 <= dflash.anchor_tail_fraction <= 1.0:
+            raise ValueError(
+                "--anchor-tail-fraction must be in [0, 1], got "
+                f"{dflash.anchor_tail_fraction}"
+            )
+        if len(dflash.anchor_position_weights) != (
+            len(dflash.anchor_position_boundaries) + 1
+        ):
+            raise ValueError(
+                "--anchor-position-weights must contain exactly one more value than "
+                "--anchor-position-boundaries"
+            )
+        if any(boundary < 0 for boundary in dflash.anchor_position_boundaries) or any(
+            right <= left
+            for left, right in zip(
+                dflash.anchor_position_boundaries,
+                dflash.anchor_position_boundaries[1:],
+                strict=False,
+            )
+        ):
+            raise ValueError(
+                "--anchor-position-boundaries must be non-negative and increasing"
+            )
+        if any(weight <= 0 for weight in dflash.anchor_position_weights):
+            raise ValueError("--anchor-position-weights must all be positive")
         return self
 
     def flatten(self) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 """Unit tests for get_base_indices_for_anchored_blocks and select_anchors."""
 
+import pytest
 import torch
 
 from speculators.models.dflash.utils import (
@@ -57,3 +58,95 @@ class TestSelectAnchors:
         anchors, anchor_valid = select_anchors(loss_mask, num_anchors=8, block_size=4)
         selected = anchors[anchor_valid]
         assert torch.equal(selected, torch.sort(selected).values)
+
+    def test_default_uniform_fixed_seed_is_unchanged(self):
+        loss_mask = torch.tensor(
+            [[1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]],
+            dtype=torch.float32,
+        )
+        valid_mask = loss_mask.bool().clone()
+        valid_mask[:, -3:] = False
+        valid_indices = torch.nonzero(
+            valid_mask.squeeze(0), as_tuple=False
+        ).squeeze(-1)
+
+        torch.manual_seed(1234)
+        expected_perm = torch.randperm(valid_indices.numel())
+        expected = torch.sort(valid_indices[expected_perm[:5]]).values
+        torch.manual_seed(1234)
+        anchors, anchor_valid = select_anchors(
+            loss_mask, num_anchors=5, block_size=3
+        )
+
+        assert torch.equal(anchors[anchor_valid], expected)
+
+    def test_long_context_mix_is_sorted_unique_and_backfills(self):
+        torch.manual_seed(0)
+        loss_mask = torch.ones(1, 32)
+        position_ids = torch.arange(32).unsqueeze(0)
+        anchors, anchor_valid = select_anchors(
+            loss_mask,
+            num_anchors=20,
+            block_size=4,
+            position_ids=position_ids,
+            sampling="long-context-mix",
+            tail_fraction=0.5,
+            position_boundaries=[24],
+            position_weights=[1.0, 100.0],
+        )
+        selected = anchors[anchor_valid]
+
+        assert selected.numel() == 20
+        assert torch.equal(selected, torch.sort(selected).values)
+        assert torch.unique(selected).numel() == selected.numel()
+        assert int(selected.max()) < 28
+
+    def test_long_context_mix_uses_per_document_positions(self):
+        # Two packed short documents have identical 0..15 positions. The second
+        # document must not be mistaken for a 16..31 long-context suffix.
+        loss_mask = torch.ones(1, 32)
+        position_ids = torch.arange(16).repeat(2).unsqueeze(0)
+        second_document_count = 0
+        total = 0
+        for seed in range(100):
+            torch.manual_seed(seed)
+            anchors, anchor_valid = select_anchors(
+                loss_mask,
+                num_anchors=8,
+                block_size=1,
+                position_ids=position_ids,
+                sampling="long-context-mix",
+                tail_fraction=1.0,
+                position_boundaries=[16],
+                position_weights=[1.0, 100.0],
+            )
+            selected = anchors[anchor_valid]
+            second_document_count += int((selected >= 16).sum())
+            total += selected.numel()
+
+        second_document_fraction = second_document_count / total
+        assert 0.4 < second_document_fraction < 0.6
+
+    def test_long_context_mix_masks_invalid_and_pads_shortfall(self):
+        torch.manual_seed(1)
+        loss_mask = torch.tensor([[1, 0, 1, 1, 0, 1, 1, 1]], dtype=torch.float32)
+        anchors, anchor_valid = select_anchors(
+            loss_mask,
+            num_anchors=8,
+            block_size=2,
+            position_ids=torch.arange(8).unsqueeze(0),
+            sampling="long-context-mix",
+        )
+
+        selected = anchors[anchor_valid]
+        assert set(selected.tolist()) == {0, 2, 3, 5}
+        assert not anchor_valid[4:].any()
+
+    def test_long_context_mix_rejects_missing_position_ids(self):
+        with pytest.raises(ValueError, match="requires position_ids"):
+            select_anchors(
+                torch.ones(1, 8),
+                num_anchors=2,
+                block_size=1,
+                sampling="long-context-mix",
+            )

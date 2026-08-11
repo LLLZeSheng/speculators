@@ -55,6 +55,34 @@ def test_dflash_decay_gamma_falls_back_when_omitted():
     assert val_kw["gamma"] == 4.0
 
 
+def test_long_context_anchor_args_apply_only_to_training(monkeypatch):
+    args = _parse(
+        monkeypatch,
+        [
+            "--speculator-type",
+            "dspark",
+            "--anchor-sampling",
+            "long-context-mix",
+            "--anchor-tail-fraction",
+            "0.6",
+            "--anchor-position-boundaries",
+            "4096",
+            "8192",
+            "--anchor-position-weights",
+            "1",
+            "3",
+            "9",
+        ],
+    )
+    train_kw, val_kw = DSparkDraftModel.get_trainer_kwargs(**vars(args))
+
+    assert train_kw["anchor_sampling"] == "long-context-mix"
+    assert train_kw["anchor_tail_fraction"] == 0.6
+    assert train_kw["anchor_position_boundaries"] == [4096, 8192]
+    assert train_kw["anchor_position_weights"] == [1.0, 3.0, 9.0]
+    assert val_kw["anchor_sampling"] == "uniform"
+
+
 def test_dflash_compound_loss(monkeypatch):
     args = _parse(monkeypatch, ["--loss-fn", '{"ce": 0.1, "tv": 0.9}'])
     train_kw, val_kw = DFlashDraftModel.get_trainer_kwargs(**vars(args))
