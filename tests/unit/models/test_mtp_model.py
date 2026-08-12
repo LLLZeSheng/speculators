@@ -3,6 +3,14 @@
 import math
 
 import torch
+from torch import nn
+from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import (
+    GlmMoeDsaConfig,
+)
+
+from speculators import SpeculatorsConfig, VerifierConfig
+from speculators.models.mtp import MTPDraftModel, MTPSpeculatorConfig
+from speculators.proposals import GreedyTokenProposalConfig
 
 BATCH = 1
 SEQ_LEN = 10
@@ -113,3 +121,54 @@ def test_short_sequence_fewer_logits(mtp_model, seed):
         logits_list, _, _ = mtp_model(input_ids=input_ids, hidden_states=hidden_states)
     assert len(logits_list) < num_steps
     assert len(logits_list) == 1
+
+
+def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
+    transformer_config = GlmMoeDsaConfig(
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        moe_intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        n_routed_experts=4,
+        n_shared_experts=1,
+        num_experts_per_tok=2,
+        kv_lora_rank=8,
+        q_lora_rank=16,
+        qk_rope_head_dim=4,
+        v_head_dim=8,
+        qk_nope_head_dim=4,
+        index_topk=4,
+        index_head_dim=8,
+        index_n_heads=2,
+        mlp_layer_types=["dense", "sparse"],
+        indexer_types=["full", "full"],
+    )
+    config = MTPSpeculatorConfig(
+        transformer_layer_config=transformer_config,
+        speculators_config=SpeculatorsConfig(
+            algorithm="mtp",
+            proposal_methods=[GreedyTokenProposalConfig(speculative_tokens=3)],
+            default_proposal_method="greedy",
+            verifier=VerifierConfig(
+                name_or_path=None,
+                architectures=["GlmMoeDsaForCausalLM"],
+            ),
+        ),
+    )
+    model = MTPDraftModel(config)
+    nn.init.normal_(model.embed_tokens.weight, std=0.02)
+    nn.init.normal_(model.lm_head.weight, std=0.02)
+    model.eval()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 6))
+    hidden_states = torch.randn(1, 6, config.hidden_size)
+    with torch.no_grad():
+        logits, loss, _ = model(input_ids=input_ids, hidden_states=hidden_states)
+
+    assert len(logits) == 3
+    assert logits[0].shape == (1, 2, config.vocab_size)
+    assert torch.isfinite(loss)
+    assert hasattr(model.mtp_layers[0].mlp, "experts")

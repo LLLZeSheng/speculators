@@ -167,6 +167,11 @@ _ALL_MODEL_TYPES = [
         id="qwen3_5_moe_text",
         marks=requires_transformers_version("5.2.0"),
     ),
+    pytest.param(
+        "glm_moe_dsa",
+        id="glm_moe_dsa",
+        marks=requires_transformers_version("5.12.0"),
+    ),
 ]
 
 

@@ -22,6 +22,7 @@ from speculators.models import base_components
 __all__ = ["MTPLayerMixin", "mtp_model_classes", "resolve_model_type"]
 
 _MIN_TRANSFORMERS_VERSION: dict[str, str] = {
+    "glm_moe_dsa": "5.12.0",
     "qwen3_next": "4.57.0",
     "qwen3_5_text": "5.2.0",
     "qwen3_5_moe_text": "5.2.0",
@@ -122,6 +123,7 @@ def _create_mtp_layer_class(
     norm_class: type[nn.Module],
     *,
     hybrid: bool = False,
+    use_last_layer: bool = False,
 ) -> type:
     """Create an MTP layer class for a specific decoder architecture.
 
@@ -137,6 +139,8 @@ def _create_mtp_layer_class(
             modified = copy.copy(config)
             if hybrid:
                 layer_idx = _last_full_attention_idx(modified)
+            elif use_last_layer:
+                layer_idx = modified.num_hidden_layers - 1
             super().__init__(modified, layer_idx)  # type: ignore[arg-type]
             self._setup_mtp_modules(modified, norm_class)
 
@@ -202,4 +206,20 @@ if "qwen3_5_moe_text" in base_components.model_classes:
     )
     mtp_model_classes["qwen3_5_moe_text"] = base_components.override_components(
         "qwen3_5_moe_text", first_layer_class=Qwen35MoeMTPLayer
+    )
+
+if "glm_moe_dsa" in base_components.model_classes:
+    from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import (
+        GlmMoeDsaDecoderLayer,
+        GlmMoeDsaRMSNorm,
+    )
+
+    GlmMoeDsaMTPLayer = _create_mtp_layer_class(
+        "GlmMoeDsaMTPLayer",
+        GlmMoeDsaDecoderLayer,
+        GlmMoeDsaRMSNorm,
+        use_last_layer=True,
+    )
+    mtp_model_classes["glm_moe_dsa"] = base_components.override_components(
+        "glm_moe_dsa", first_layer_class=GlmMoeDsaMTPLayer
     )

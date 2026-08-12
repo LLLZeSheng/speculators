@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
+from speculators.convert.mtp import converter as mtp_converter
 from speculators.convert.mtp.converter import MTPConverter
 from tests.conftest import requires_transformers_version
 
@@ -45,6 +46,90 @@ class TestRemapKey:
     )
     def test_remap_key(self, input_key, expected):
         assert MTPConverter._remap_key(input_key) == expected
+
+    @pytest.mark.parametrize(
+        ("input_key", "expected"),
+        [
+            (
+                "model.layers.78.eh_proj.weight",
+                "mtp_layers.0.input_proj.weight",
+            ),
+            (
+                "model.layers.78.hnorm.weight",
+                "mtp_layers.0.hidden_layernorm.weight",
+            ),
+            (
+                "model.layers.78.enorm.weight",
+                "mtp_layers.0.token_layernorm.weight",
+            ),
+            (
+                "model.layers.78.shared_head.norm.weight",
+                "mtp_layers.0.final_layernorm.weight",
+            ),
+            (
+                "model.layers.78.self_attn.q_a_proj.weight",
+                "mtp_layers.0.self_attn.q_a_proj.weight",
+            ),
+            (
+                "model.layers.78.mlp.experts.3.gate_proj.weight",
+                "mtp_layers.0.mlp.experts.3.gate_proj.weight",
+            ),
+        ],
+    )
+    def test_remap_glm_extra_layer_key(self, input_key, expected):
+        assert MTPConverter._remap_key(
+            input_key, source_prefix="model.layers.78."
+        ) == expected
+
+    @pytest.mark.parametrize(
+        ("input_key", "expected"),
+        [
+            (
+                "mtp_layers.0.input_proj.weight",
+                "model.layers.78.eh_proj.weight",
+            ),
+            (
+                "mtp_layers.0.final_layernorm.weight",
+                "model.layers.78.shared_head.norm.weight",
+            ),
+            (
+                "mtp_layers.0.self_attn.o_proj.weight",
+                "model.layers.78.self_attn.o_proj.weight",
+            ),
+        ],
+    )
+    def test_reverse_remap_glm_key(self, input_key, expected):
+        assert (
+            mtp_converter.remap_mtp_key_to_native(input_key, "glm_moe_dsa", 78)
+            == expected
+        )
+
+
+class TestResolveMtpPrefix:
+    def test_glm_uses_extra_layer_after_verifier_layers(self):
+        keys = [
+            "model.layers.0.self_attn.q_a_proj.weight",
+            "model.layers.77.self_attn.q_a_proj.weight",
+            "model.layers.78.eh_proj.weight",
+        ]
+        config = {
+            "model_type": "glm_moe_dsa",
+            "num_hidden_layers": 78,
+            "num_nextn_predict_layers": 1,
+        }
+
+        assert MTPConverter._resolve_mtp_prefix(keys, config) == "model.layers.78."
+
+    def test_glm_rejects_missing_extra_layer(self):
+        keys = ["model.layers.77.self_attn.q_a_proj.weight"]
+        config = {
+            "model_type": "glm_moe_dsa",
+            "num_hidden_layers": 78,
+            "num_nextn_predict_layers": 1,
+        }
+
+        with pytest.raises(ValueError, match="model.layers.78"):
+            MTPConverter._resolve_mtp_prefix(keys, config)
 
 
 class TestFuseMoeExperts:

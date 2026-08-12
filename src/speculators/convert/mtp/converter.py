@@ -4,10 +4,11 @@ Extracts only the MTP layer weights from a checkpoint with native MTP
 layers and saves a Speculators checkpoint that loads with
 ``MTPDraftModel.from_pretrained(path)``.
 
-Only the ``mtp.*`` subtree is extracted from the (potentially sharded)
-safetensors file; the rest of the model is never loaded.  The embed_tokens
-and lm_head are loaded from the verifier at runtime via
-``load_verifier_weights()``.
+Only the native MTP subtree is extracted from the (potentially sharded)
+safetensors file; the rest of the model is never loaded. Qwen checkpoints use
+``mtp.*`` while GLM MoE DSA checkpoints use the extra transformer layer at
+``model.layers.<num_hidden_layers>.*``. The embed_tokens and lm_head are loaded
+from the verifier at runtime via ``load_verifier_weights()``.
 """
 
 import json
@@ -28,7 +29,12 @@ from speculators.models.mtp import MTPDraftModel, MTPSpeculatorConfig
 from speculators.proposals.greedy import GreedyTokenProposalConfig
 from speculators.utils.loading import list_checkpoint_keys
 
-__all__ = ["MTPConverter"]
+__all__ = [
+    "MTP_EXACT_REMAP",
+    "MTP_PREFIX_REMAP",
+    "MTPConverter",
+    "remap_mtp_key_to_native",
+]
 
 _MTP_PREFIX = "mtp."
 
@@ -43,9 +49,45 @@ MTP_PREFIX_REMAP: list[tuple[str, str]] = [
     ("mtp.layers.0.", "mtp_layers.0."),
 ]
 
+_INVERSE_MTP_EXACT_REMAP = {v: k for k, v in MTP_EXACT_REMAP.items()}
+_INVERSE_MTP_PREFIX_REMAP = [(dst, src) for src, dst in MTP_PREFIX_REMAP]
+
+_GLM_MTP_EXACT_SUFFIX_REMAP: dict[str, str] = {
+    "eh_proj.weight": "mtp_layers.0.input_proj.weight",
+    "hnorm.weight": "mtp_layers.0.hidden_layernorm.weight",
+    "enorm.weight": "mtp_layers.0.token_layernorm.weight",
+    "shared_head.norm.weight": "mtp_layers.0.final_layernorm.weight",
+}
+_INVERSE_GLM_MTP_EXACT_SUFFIX_REMAP = {
+    value: key for key, value in _GLM_MTP_EXACT_SUFFIX_REMAP.items()
+}
+
 _EXPERT_PATTERN = re.compile(
     r"^(.+\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$"
 )
+
+
+def remap_mtp_key_to_native(
+    key: str,
+    model_type: str,
+    num_hidden_layers: int,
+) -> str:
+    """Map a Speculators MTP key back to a verifier-native checkpoint key."""
+    if model_type == "glm_moe_dsa":
+        prefix = f"model.layers.{num_hidden_layers}."
+        if key in _INVERSE_GLM_MTP_EXACT_SUFFIX_REMAP:
+            return prefix + _INVERSE_GLM_MTP_EXACT_SUFFIX_REMAP[key]
+        generic_prefix = "mtp_layers.0."
+        if key.startswith(generic_prefix):
+            return prefix + key[len(generic_prefix) :]
+        return key
+
+    if key in _INVERSE_MTP_EXACT_REMAP:
+        return _INVERSE_MTP_EXACT_REMAP[key]
+    for source, destination in _INVERSE_MTP_PREFIX_REMAP:
+        if key.startswith(source):
+            return destination + key[len(source) :]
+    return key
 
 
 class MTPConverter:
@@ -69,10 +111,13 @@ class MTPConverter:
         logger.info(f"Extracting native MTP weights from {input_path}")
 
         local_path = ensure_checkpoint_is_local(input_path, cache_dir)
+        source_config = load_checkpoint_config(local_path)
+        if "text_config" in source_config:
+            source_config = source_config["text_config"]
         all_keys = list_checkpoint_keys(local_path)
-        self._verify_mtp_format(all_keys)
+        source_prefix = self._resolve_mtp_prefix(all_keys, source_config)
 
-        weights = self._extract_weights(local_path, all_keys)
+        weights = self._extract_weights(local_path, all_keys, source_prefix)
         weights = self._fuse_moe_experts(weights)
         logger.info(f"Extracted {len(weights)} MTP weight tensors")
         return weights
@@ -103,16 +148,33 @@ class MTPConverter:
         if validate:
             self._validate(saved_path)
 
-    def _verify_mtp_format(self, keys: list[str]) -> None:
-        if not any(k.startswith(_MTP_PREFIX) for k in keys):
+    @staticmethod
+    def _resolve_mtp_prefix(keys: list[str], source_config: dict) -> str:
+        if any(key.startswith(_MTP_PREFIX) for key in keys):
+            return _MTP_PREFIX
+
+        if source_config.get("model_type") == "glm_moe_dsa":
+            layer_idx = source_config.get("num_hidden_layers")
+            prefix = f"model.layers.{layer_idx}."
+            if any(key.startswith(prefix) for key in keys):
+                return prefix
             raise ValueError(
-                f"No keys with prefix '{_MTP_PREFIX}' found. "
-                "This converter requires checkpoints with native "
-                "MTP layers (e.g. Qwen3-Next, Qwen3.5, Qwen3.5-MoE)."
+                f"GLM checkpoint declares native MTP but no '{prefix}' "
+                "weights were found."
             )
 
+        raise ValueError(
+            f"No keys with prefix '{_MTP_PREFIX}' found. This converter "
+            "requires a checkpoint with supported native MTP layers."
+        )
+
     @staticmethod
-    def _remap_key(key: str) -> str:
+    def _remap_key(key: str, source_prefix: str = _MTP_PREFIX) -> str:
+        if source_prefix != _MTP_PREFIX and key.startswith(source_prefix):
+            suffix = key[len(source_prefix) :]
+            if suffix in _GLM_MTP_EXACT_SUFFIX_REMAP:
+                return _GLM_MTP_EXACT_SUFFIX_REMAP[suffix]
+            return "mtp_layers.0." + suffix
         if key in MTP_EXACT_REMAP:
             return MTP_EXACT_REMAP[key]
         for src, dst in MTP_PREFIX_REMAP:
@@ -186,20 +248,25 @@ class MTPConverter:
         return non_expert
 
     def _extract_weights(
-        self, checkpoint_dir: Path, all_keys: list[str]
+        self,
+        checkpoint_dir: Path,
+        all_keys: list[str],
+        source_prefix: str,
     ) -> dict[str, torch.Tensor]:
-        needed = {k for k in all_keys if k.startswith(_MTP_PREFIX)}
+        needed = {k for k in all_keys if k.startswith(source_prefix)}
 
         index_path = checkpoint_dir / "model.safetensors.index.json"
         if index_path.exists():
-            return self._extract_from_shards(checkpoint_dir, index_path, needed)
+            return self._extract_from_shards(
+                checkpoint_dir, index_path, needed, source_prefix
+            )
 
         single = checkpoint_dir / "model.safetensors"
         if single.exists():
             weights: dict[str, torch.Tensor] = {}
             with safe_open(str(single), framework="pt") as f:
                 for key in needed & set(f.keys()):
-                    weights[self._remap_key(key)] = f.get_tensor(key)
+                    weights[self._remap_key(key, source_prefix)] = f.get_tensor(key)
             return weights
 
         raise FileNotFoundError(
@@ -212,6 +279,7 @@ class MTPConverter:
         checkpoint_dir: Path,
         index_path: Path,
         needed_keys: set[str],
+        source_prefix: str,
     ) -> dict[str, torch.Tensor]:
         with index_path.open() as f:
             weight_map: dict[str, str] = json.load(f)["weight_map"]
@@ -227,7 +295,7 @@ class MTPConverter:
             logger.debug(f"Reading {len(keys)} key(s) from shard {shard_filename}")
             with safe_open(str(shard_path), framework="pt") as f:
                 for key in keys:
-                    weights[self._remap_key(key)] = f.get_tensor(key)
+                    weights[self._remap_key(key, source_prefix)] = f.get_tensor(key)
 
         return weights
 
