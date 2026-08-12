@@ -40,13 +40,11 @@ from rich.progress import (
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from speculators.convert.mtp import MTP_EXACT_REMAP, MTP_PREFIX_REMAP
+from speculators.convert.mtp import remap_mtp_key_to_native
+from speculators.convert.utils import load_checkpoint_config
 
 app = typer.Typer(rich_markup_mode="rich")
 console = Console()
-
-INVERSE_MTP_EXACT_REMAP = {v: k for k, v in MTP_EXACT_REMAP.items()}
-INVERSE_MTP_PREFIX_REMAP = [(dst, src) for src, dst in MTP_PREFIX_REMAP]
 
 _FROZEN_KEYS = {"embed_tokens.weight", "lm_head.weight"}
 
@@ -74,13 +72,12 @@ def _bar() -> Progress:
     )
 
 
-def _remap_key(key: str) -> str:
-    if key in INVERSE_MTP_EXACT_REMAP:
-        return INVERSE_MTP_EXACT_REMAP[key]
-    for src, dst in INVERSE_MTP_PREFIX_REMAP:
-        if key.startswith(src):
-            return dst + key[len(src) :]
-    return key
+def _remap_key(
+    key: str,
+    model_type: str = "",
+    num_hidden_layers: int = 0,
+) -> str:
+    return remap_mtp_key_to_native(key, model_type, num_hidden_layers)
 
 
 def _filter_frozen_keys(
@@ -262,6 +259,11 @@ def stitch(
     )
 
     verifier_path = _resolve_verifier_path(verifier_path)
+    verifier_config = load_checkpoint_config(verifier_path)
+    if "text_config" in verifier_config:
+        verifier_config = verifier_config["text_config"]
+    model_type = verifier_config.get("model_type", "")
+    num_hidden_layers = verifier_config.get("num_hidden_layers", 0)
 
     weights = _load_finetuned_weights(finetuned_checkpoint)
     console.print(f"  Loaded [cyan]{len(weights)}[/] finetuned weight tensors")
@@ -274,7 +276,9 @@ def stitch(
         )
 
     weights = _unfuse_moe_experts(weights)
-    native_weights = {_remap_key(k): v for k, v in weights.items()}
+    native_weights = {
+        _remap_key(k, model_type, num_hidden_layers): v for k, v in weights.items()
+    }
     console.print(f"  Remapped [cyan]{len(native_weights)}[/] keys to native format")
 
     with _spinner() as progress:
