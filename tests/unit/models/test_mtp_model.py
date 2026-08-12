@@ -129,7 +129,7 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
         hidden_size=32,
         intermediate_size=64,
         moe_intermediate_size=16,
-        num_hidden_layers=2,
+        num_hidden_layers=3,
         num_attention_heads=4,
         num_key_value_heads=4,
         n_routed_experts=4,
@@ -143,8 +143,8 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
         index_topk=4,
         index_head_dim=8,
         index_n_heads=2,
-        mlp_layer_types=["dense", "sparse"],
-        indexer_types=["full", "full"],
+        mlp_layer_types=["dense", "sparse", "sparse"],
+        indexer_types=["full", "full", "shared"],
     )
     config = MTPSpeculatorConfig(
         transformer_layer_config=transformer_config,
@@ -172,3 +172,4 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
     assert logits[0].shape == (1, 2, config.vocab_size)
     assert torch.isfinite(loss)
     assert hasattr(model.mtp_layers[0].mlp, "experts")
+    assert model.mtp_layers[0].self_attn.indexer is not None

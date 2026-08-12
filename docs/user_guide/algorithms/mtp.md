@@ -1,6 +1,6 @@
 # MTP (Multi-Token Prediction)
 
-MTP is a speculative decoding method that uses the model's own native multi-token prediction head to draft multiple tokens ahead, which are then verified by the target model in a single forward pass. Unlike Eagle-3 and DFlash which train draft models from scratch, MTP finetuning starts from the model's pre-existing MTP layers -- converting them to speculators format, finetuning on domain-specific data, and stitching the improved weights back. This approach is available for models that ship with native MTP support, such as Qwen3-Next and Qwen3.5.
+MTP is a speculative decoding method that uses the model's own native multi-token prediction head to draft multiple tokens ahead, which are then verified by the target model in a single forward pass. Unlike Eagle-3 and DFlash which train draft models from scratch, MTP finetuning starts from the model's pre-existing MTP layers -- converting them to speculators format, finetuning on domain-specific data, and stitching the improved weights back. This approach is available for models that ship with native MTP support, such as Qwen3-Next, Qwen3.5, and GLM-5.2 (`glm_moe_dsa`).
 
 ## How It Works
 
@@ -15,6 +15,33 @@ The MTP head consists of a single prediction layer that takes two inputs at each
 3. **Stitch:** Merge the finetuned MTP weights back into the original verifier checkpoint for deployment
 
 Only the MTP layers are trainable -- `embed_tokens` and `lm_head` are frozen and shared with the verifier.
+
+## GLM-5.2
+
+GLM-5.2 stores its native MTP head as an extra transformer layer at `model.layers.<num_hidden_layers>.*` instead of the `mtp.*` subtree used by Qwen. Speculators detects this layout from `model_type: glm_moe_dsa`, converts the extra layer for training, and restores the original layout during stitching.
+
+The checkpoint contains one native MTP layer. It is reused recursively, so `--num-speculative-steps 3` trains MTP3 without requiring three separate native layers:
+
+```bash
+python scripts/train.py \
+    --verifier-name-or-path /path/to/GLM-5.2 \
+    --data-path /path/to/dataset \
+    --save-path ./output/checkpoints \
+    --speculator-type mtp \
+    --num-speculative-steps 3 \
+    --target-layer-ids 78
+```
+
+After training, merge the checkpoint back into a copy of the verifier:
+
+```bash
+python scripts/stitch_mtp.py \
+    ./output/checkpoints/checkpoint_best \
+    /path/to/GLM-5.2 \
+    --output-path ./output/glm-5.2-mtp3
+```
+
+The verifier used to generate hidden states must match the verifier receiving the stitched MTP weights. This is especially important when training against a quantized GLM checkpoint.
 
 ### Step Weight Formula
 

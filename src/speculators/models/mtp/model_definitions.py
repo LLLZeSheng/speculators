@@ -71,6 +71,22 @@ def _last_full_attention_idx(config: PretrainedConfig) -> int:
     )
 
 
+def _last_glm_native_mtp_idx(config: PretrainedConfig) -> int:
+    """Select a sparse GLM layer with its own DSA indexer.
+
+    GLM's final verifier layer may share top-k indices with an earlier layer,
+    while the native MTP checkpoint always contains a complete indexer.
+    """
+    indexer_types: list[str] = getattr(config, "indexer_types", [])
+    mlp_layer_types: list[str] = getattr(config, "mlp_layer_types", [])
+    for idx in reversed(range(min(len(indexer_types), len(mlp_layer_types)))):
+        if indexer_types[idx] == "full" and mlp_layer_types[idx] == "sparse":
+            return idx
+    raise ValueError(
+        "GLM MTP requires a sparse decoder layer with a full DSA indexer."
+    )
+
+
 class MTPLayerMixin:
     """MTP-specific modifications for any decoder layer.
 
@@ -123,7 +139,7 @@ def _create_mtp_layer_class(
     norm_class: type[nn.Module],
     *,
     hybrid: bool = False,
-    use_last_layer: bool = False,
+    glm_native_mtp: bool = False,
 ) -> type:
     """Create an MTP layer class for a specific decoder architecture.
 
@@ -139,8 +155,8 @@ def _create_mtp_layer_class(
             modified = copy.copy(config)
             if hybrid:
                 layer_idx = _last_full_attention_idx(modified)
-            elif use_last_layer:
-                layer_idx = modified.num_hidden_layers - 1
+            elif glm_native_mtp:
+                layer_idx = _last_glm_native_mtp_idx(modified)
             super().__init__(modified, layer_idx)  # type: ignore[arg-type]
             self._setup_mtp_modules(modified, norm_class)
 
@@ -218,7 +234,7 @@ if "glm_moe_dsa" in base_components.model_classes:
         "GlmMoeDsaMTPLayer",
         GlmMoeDsaDecoderLayer,
         GlmMoeDsaRMSNorm,
-        use_last_layer=True,
+        glm_native_mtp=True,
     )
     mtp_model_classes["glm_moe_dsa"] = base_components.override_components(
         "glm_moe_dsa", first_layer_class=GlmMoeDsaMTPLayer
