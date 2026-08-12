@@ -90,7 +90,11 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
 
     def __init__(self, config: MTPSpeculatorConfig) -> None:
         if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001
-            config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001
+            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001
+                "sdpa"
+                if config.transformer_layer_config.model_type == "glm_moe_dsa"
+                else "eager"
+            )
         super().__init__(config=config)
         self._init_vocab(config)
         if self.use_draft_vocab:

@@ -129,7 +129,10 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch, tmp_pat
     original_empty = torch.empty
 
     def nan_empty(*args, **kwargs):
-        return original_empty(*args, **kwargs).fill_(torch.nan)
+        tensor = original_empty(*args, **kwargs)
+        if tensor.is_floating_point() or tensor.is_complex():
+            tensor.fill_(torch.nan)
+        return tensor
 
     # GLM experts and router state are raw Parameters rather than Linear
     # modules. Poison allocations so missing architecture-specific init is
@@ -170,6 +173,7 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch, tmp_pat
         ),
     )
     model = MTPDraftModel(config)
+    assert model.config.transformer_layer_config._attn_implementation == "sdpa"
     nn.init.normal_(model.embed_tokens.weight, std=0.02)
     nn.init.normal_(model.lm_head.weight, std=0.02)
     model.eval()
