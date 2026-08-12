@@ -61,4 +61,4 @@ def test_stitch_replaces_glm_extra_layer_weights(tmp_path):
             handle.get_tensor("model.layers.2.self_attn.o_proj.weight"),
             torch.full((2, 2), 2.0),
         )
-        assert "mtp_layers.0.input_proj.weight" not in handle
+        assert "mtp_layers.0.input_proj.weight" not in handle.keys()  # noqa: SIM118
