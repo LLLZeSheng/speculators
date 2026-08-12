@@ -98,6 +98,13 @@ MIN_STEP_PCT = 0.25
 _VAL_SYNC_INTERVAL = 50
 
 
+def _replicated_finite_flag(value: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Return an ordinary replicated int flag, even when *value* is a DTensor."""
+    local_value = value.to_local() if hasattr(value, "to_local") else value
+    is_finite = bool(torch.isfinite(local_value.detach()).all().item())
+    return torch.tensor(is_finite, dtype=torch.int32, device=device)
+
+
 class TrainerConfig(NamedTuple):
     lr: float
     num_epochs: int
@@ -421,7 +428,7 @@ class Trainer:
             )
         return skip_steps
 
-    def train_epoch(self, epoch: int):
+    def train_epoch(self, epoch: int):  # noqa: C901 - safety guards are explicit
         self.model.train()
         if hasattr(self.train_loader.batch_sampler, "set_epoch"):
             self.train_loader.batch_sampler.set_epoch(epoch)  # type: ignore[union-attr]
@@ -466,8 +473,34 @@ class Trainer:
 
             timer.mark("fwd")
             self._optimizers_zero_grad()
+            loss_finite = _replicated_finite_flag(loss, loss.device)
+            if self.is_distributed:
+                dist.all_reduce(loss_finite, op=dist.ReduceOp.MIN)
+            if not bool(loss_finite.item()):
+                if self.rank == 0:
+                    root_logger.warning(
+                        "Skipping a training batch because at least one rank "
+                        "produced a non-finite loss. No optimizer or scheduler "
+                        "step was performed."
+                    )
+                t_before_fetch = timer.now() or time.perf_counter()
+                continue
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_finite = _replicated_finite_flag(grad_norm, loss.device)
+            if self.is_distributed:
+                dist.all_reduce(grad_finite, op=dist.ReduceOp.MIN)
+            if not bool(grad_finite.item()):
+                self._optimizers_zero_grad()
+                if self.rank == 0:
+                    root_logger.warning(
+                        "Skipping a training batch because at least one rank "
+                        "produced a non-finite gradient norm. No optimizer or "
+                        "scheduler step was performed."
+                    )
+                t_before_fetch = timer.now() or time.perf_counter()
+                continue
 
             timer.mark("bwd")
             self._optimizers_step()

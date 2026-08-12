@@ -201,6 +201,13 @@ def test_no_norm_output_flag(monkeypatch):
     assert args.norm_output is False
 
 
+def test_cached_hidden_states_finite_validation_can_be_disabled(monkeypatch):
+    args = _parse(
+        monkeypatch, ["--no-validate-cached-hidden-states-finite"]
+    )
+    assert args.validate_cached_hidden_states_finite is False
+
+
 # ---------------------------------------------------------------------------
 # --max-steps
 # ---------------------------------------------------------------------------

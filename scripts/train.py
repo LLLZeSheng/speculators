@@ -646,6 +646,9 @@ def main(cfg: TrainConfig):  # noqa: C901
         prefetch_factor=args.prefetch_factor,
         preprocess=preprocess,
         train_data_ratio=args.train_data_ratio,
+        validate_cached_hidden_states_finite=(
+            args.validate_cached_hidden_states_finite
+        ),
     )
 
     # Get trainer kwargs from model class

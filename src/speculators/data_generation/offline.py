@@ -7,7 +7,9 @@ logger = logging.getLogger(__name__)
 _MIN_HIDDEN_STATES_NDIM = 2
 
 
-def check_hidden_states(data: dict, tokens: list[int]) -> None:
+def check_hidden_states(
+    data: dict, tokens: list[int], *, check_finite: bool = True
+) -> None:
     """Validate one hidden-state payload before it is cached or trained on."""
     required = {"token_ids", "hidden_states"}
     missing = required - data.keys()
@@ -50,7 +52,7 @@ def check_hidden_states(data: dict, tokens: list[int]) -> None:
             f" doesn't match num tokens {len(tokens)}"
         )
 
-    if not torch.isfinite(hidden_states).all().item():
+    if check_finite and not torch.isfinite(hidden_states).all().item():
         nan_count = int(torch.isnan(hidden_states).sum().item())
         posinf_count = int(torch.isposinf(hidden_states).sum().item())
         neginf_count = int(torch.isneginf(hidden_states).sum().item())
