@@ -68,6 +68,26 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
     t2d: torch.Tensor | None
     d2t: torch.Tensor | None
 
+    @torch.no_grad()
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+
+        tc = self.config.transformer_layer_config
+        if tc.model_type != "glm_moe_dsa":
+            return
+
+        from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import (  # noqa: PLC0415
+            GlmMoeDsaExperts,
+            GlmMoeDsaTopkRouter,
+        )
+
+        if isinstance(module, GlmMoeDsaTopkRouter):
+            nn.init.normal_(module.weight, mean=0.0, std=tc.initializer_range)
+            nn.init.zeros_(module.e_score_correction_bias)
+        elif isinstance(module, GlmMoeDsaExperts):
+            nn.init.normal_(module.gate_up_proj, mean=0.0, std=tc.initializer_range)
+            nn.init.normal_(module.down_proj, mean=0.0, std=tc.initializer_range)
+
     def __init__(self, config: MTPSpeculatorConfig) -> None:
         if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001
             config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001

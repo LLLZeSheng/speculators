@@ -82,9 +82,7 @@ def _last_glm_native_mtp_idx(config: PretrainedConfig) -> int:
     for idx in reversed(range(min(len(indexer_types), len(mlp_layer_types)))):
         if indexer_types[idx] == "full" and mlp_layer_types[idx] == "sparse":
             return idx
-    raise ValueError(
-        "GLM MTP requires a sparse decoder layer with a full DSA indexer."
-    )
+    raise ValueError("GLM MTP requires a sparse decoder layer with a full DSA indexer.")
 
 
 class MTPLayerMixin:

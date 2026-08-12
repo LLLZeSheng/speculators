@@ -123,7 +123,16 @@ def test_short_sequence_fewer_logits(mtp_model, seed):
     assert len(logits_list) == 1
 
 
-def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
+def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch):
+    original_empty = torch.empty
+
+    def nan_empty(*args, **kwargs):
+        return original_empty(*args, **kwargs).fill_(torch.nan)
+
+    # GLM experts and router state are raw Parameters rather than Linear
+    # modules. Poison allocations so missing architecture-specific init is
+    # deterministic instead of depending on allocator contents.
+    monkeypatch.setattr(torch, "empty", nan_empty)
     transformer_config = GlmMoeDsaConfig(
         vocab_size=64,
         hidden_size=32,
@@ -172,4 +181,6 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed):
     assert logits[0].shape == (1, 2, config.vocab_size)
     assert torch.isfinite(loss)
     assert hasattr(model.mtp_layers[0].mlp, "experts")
+    assert torch.isfinite(model.mtp_layers[0].mlp.experts.gate_up_proj).all()
+    assert torch.isfinite(model.mtp_layers[0].mlp.experts.down_proj).all()
     assert model.mtp_layers[0].self_attn.indexer is not None

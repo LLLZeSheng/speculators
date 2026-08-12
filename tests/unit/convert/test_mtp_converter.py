@@ -77,9 +77,10 @@ class TestRemapKey:
         ],
     )
     def test_remap_glm_extra_layer_key(self, input_key, expected):
-        assert MTPConverter._remap_key(
-            input_key, source_prefix="model.layers.78."
-        ) == expected
+        assert (
+            MTPConverter._remap_key(input_key, source_prefix="model.layers.78.")
+            == expected
+        )
 
     @pytest.mark.parametrize(
         ("input_key", "expected"),
