@@ -255,3 +255,21 @@ class TestBuildConfig:
         assert config.speculators_config.algorithm == "mtp"
         assert config.speculators_config.verifier.name_or_path == "Qwen/Qwen3.5-0.8B"
         assert config.speculators_config.default_proposal_method == "greedy"
+
+
+class TestValidateLoadResult:
+    def test_rejects_missing_mtp_weight(self):
+        with pytest.raises(ValueError, match="Critical MTP layer weights missing"):
+            MTPConverter.validate_load_result(
+                ["mtp_layers.0.self_attn.indexer.wk.weight"], []
+            )
+
+    def test_rejects_unexpected_weight(self):
+        with pytest.raises(ValueError, match="Unexpected keys"):
+            MTPConverter.validate_load_result([], ["mtp_layers.0.renamed.weight"])
+
+    def test_allows_runtime_verifier_weights(self):
+        MTPConverter.validate_load_result(
+            ["embed_tokens.weight", "lm_head.weight", "verifier_lm_head.weight"],
+            [],
+        )

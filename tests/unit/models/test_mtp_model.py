@@ -2,11 +2,9 @@
 
 import math
 
+import pytest
 import torch
 from torch import nn
-from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import (
-    GlmMoeDsaConfig,
-)
 
 from speculators import SpeculatorsConfig, VerifierConfig
 from speculators.models.mtp import MTPDraftModel, MTPSpeculatorConfig
@@ -124,6 +122,10 @@ def test_short_sequence_fewer_logits(mtp_model, seed):
 
 
 def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch):
+    glm_config = pytest.importorskip(
+        "transformers.models.glm_moe_dsa.configuration_glm_moe_dsa",
+    )
+    GlmMoeDsaConfig = glm_config.GlmMoeDsaConfig
     original_empty = torch.empty
 
     def nan_empty(*args, **kwargs):
@@ -184,3 +186,7 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch):
     assert torch.isfinite(model.mtp_layers[0].mlp.experts.gate_up_proj).all()
     assert torch.isfinite(model.mtp_layers[0].mlp.experts.down_proj).all()
     assert model.mtp_layers[0].self_attn.indexer is not None
+    assert not any(
+        parameter.requires_grad
+        for parameter in model.mtp_layers[0].self_attn.indexer.parameters()
+    )

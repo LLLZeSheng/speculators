@@ -286,10 +286,12 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
 
         from speculators.convert.mtp.converter import MTPConverter  # noqa: PLC0415
 
-        state_dict = MTPConverter().convert_to_state_dict(
+        converter = MTPConverter()
+        state_dict = converter.convert_to_state_dict(
             verifier_name_or_path  # type: ignore[arg-type]
         )
-        model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        converter.validate_load_result(missing, unexpected)
 
         model.load_verifier_weights()
         return model

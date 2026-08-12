@@ -43,6 +43,13 @@ python scripts/stitch_mtp.py \
 
 The verifier used to generate hidden states must match the verifier receiving the stitched MTP weights. This is especially important when training against a quantized GLM checkpoint.
 
+GLM's DSA indexer computes a dense `[batch, index_heads, sequence, sequence]`
+score tensor before selecting top-k keys. The Transformers eager and SDPA paths
+therefore still have quadratic peak memory in sequence length. Start GLM MTP
+training with a short `--total-seq-len` and measure peak GPU memory before
+scaling toward 8192 tokens; long-context training requires a backend with a
+memory-efficient DSA indexer and has not been validated by this integration.
+
 ### Step Weight Formula
 
 Per-step loss weights follow normalized exponential decay:

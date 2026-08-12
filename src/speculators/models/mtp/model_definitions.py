@@ -157,6 +157,9 @@ def _create_mtp_layer_class(
                 layer_idx = _last_glm_native_mtp_idx(modified)
             super().__init__(modified, layer_idx)  # type: ignore[arg-type]
             self._setup_mtp_modules(modified, norm_class)
+            if glm_native_mtp:
+                for parameter in self.self_attn.indexer.parameters():
+                    parameter.requires_grad_(False)
 
     _MTPLayer.__name__ = name
     _MTPLayer.__qualname__ = name

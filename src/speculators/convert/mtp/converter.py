@@ -98,6 +98,23 @@ class MTPConverter:
     the weight index -- the main transformer stack is never loaded.
     """
 
+    @staticmethod
+    def validate_load_result(missing: list[str], unexpected: list[str]) -> None:
+        """Reject checkpoint/model drift while allowing runtime-only weights."""
+        if unexpected:
+            raise ValueError(
+                "Unexpected keys in extracted weights -- the checkpoint structure "
+                "does not match the model architecture. "
+                f"Unexpected keys: {unexpected}"
+            )
+        critical_missing = [key for key in missing if key.startswith("mtp_layers.")]
+        if critical_missing:
+            raise ValueError(
+                "Critical MTP layer weights missing after extraction. The checkpoint "
+                "may be incompatible or use an unsupported format. "
+                f"Missing keys: {critical_missing}"
+            )
+
     def convert_to_state_dict(
         self,
         input_path: str | Path,
@@ -340,23 +357,8 @@ class MTPConverter:
     ) -> Path:
         model = MTPDraftModel(config)
         missing, unexpected = model.load_state_dict(weights, strict=False)
-        if unexpected:
-            raise ValueError(
-                "Unexpected keys in extracted weights -- the "
-                "checkpoint structure does not match the model "
-                "architecture. This may indicate a wrong layer_idx "
-                "(full_attention vs linear_attention). "
-                f"Unexpected keys: {unexpected}"
-            )
+        self.validate_load_result(missing, unexpected)
         if missing:
-            critical_missing = [k for k in missing if k.startswith("mtp_layers.")]
-            if critical_missing:
-                raise ValueError(
-                    "Critical MTP layer weights missing after extraction. "
-                    "The checkpoint may be incompatible or use an "
-                    "unsupported format. "
-                    f"Missing keys: {critical_missing}"
-                )
             logger.debug(
                 f"Keys not in extracted weights (loaded from verifier at runtime): "
                 f"{missing}"
