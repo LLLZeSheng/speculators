@@ -17,6 +17,25 @@ SEQ_LEN = 10
 # ===== Forward output structure =====
 
 
+def _counted_metric(metrics, name):
+    return metrics[f"{name}_sum"] / metrics[f"{name}_total"]
+
+
+class _SequentialPredictions(nn.Module):
+    def __init__(self, predictions: list[torch.Tensor], vocab_size: int):
+        super().__init__()
+        self.predictions = predictions
+        self.vocab_size = vocab_size
+        self.call_index = 0
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        pred_ids = self.predictions[self.call_index].to(hidden_states.device)
+        self.call_index += 1
+        return 10 * nn.functional.one_hot(pred_ids, num_classes=self.vocab_size).to(
+            hidden_states.dtype
+        )
+
+
 def test_forward_output_structure(mtp_model, seed):
     """Verify logit shapes, loss, and per-step metrics in a single forward pass."""
     num_steps = mtp_model.config.num_speculative_steps
@@ -38,13 +57,69 @@ def test_forward_output_structure(mtp_model, seed):
     assert torch.isfinite(total_loss)
     assert total_loss >= 0
 
-    expected_keys = {f"loss_step_{k}" for k in range(num_steps)} | {
-        "loss_sum",
-        "loss_total",
-    }
+    expected_keys = (
+        {
+            f"{name}_{suffix}"
+            for name in (
+                "full_acc",
+                "accepted_draft_len",
+                "accept_len",
+                *(f"position_{k}_acc" for k in range(num_steps)),
+                *(f"conditional_position_{k}_acc" for k in range(num_steps)),
+            )
+            for suffix in ("sum", "total")
+        }
+        | {f"loss_step_{k}" for k in range(num_steps)}
+        | {
+            "loss_sum",
+            "loss_total",
+        }
+    )
     assert set(metrics.keys()) == expected_keys
     for key in expected_keys:
         assert math.isfinite(metrics[key])
+
+
+def test_forward_reports_greedy_prefix_acceptance_metrics(mtp_model, seed):
+    """Acceptance length counts consecutive correct recursive MTP predictions."""
+    num_steps = mtp_model.config.num_speculative_steps
+    assert num_steps == 3
+    vocab_size = mtp_model.config.vocab_size
+    hidden_size = mtp_model.config.hidden_size
+    valid_len = SEQ_LEN - num_steps - 1
+    input_ids = torch.arange(SEQ_LEN).unsqueeze(0) % vocab_size
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+
+    targets = [
+        input_ids[:, step + 2 : step + 2 + valid_len].clone()
+        for step in range(num_steps)
+    ]
+    predictions = [target.clone() for target in targets]
+    # Step 0: 6/6 correct. Step 1: 3/6 correct. Step 2: 5/6 correct,
+    # but only 2/3 are correct among anchors whose first two tokens matched.
+    predictions[1][:, 3:] = (predictions[1][:, 3:] + 1) % vocab_size
+    predictions[2][:, 2] = (predictions[2][:, 2] + 1) % vocab_size
+    mtp_model.lm_head = _SequentialPredictions(predictions, vocab_size)
+
+    with torch.no_grad():
+        _, _, metrics = mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+        )
+
+    expected = {
+        "position_0_acc": 1.0,
+        "position_1_acc": 0.5,
+        "position_2_acc": 5 / 6,
+        "conditional_position_0_acc": 1.0,
+        "conditional_position_1_acc": 0.5,
+        "conditional_position_2_acc": 2 / 3,
+        "full_acc": 7 / 9,
+        "accepted_draft_len": 11 / 6,
+        "accept_len": 17 / 6,
+    }
+    for name, value in expected.items():
+        assert _counted_metric(metrics, name).item() == pytest.approx(value)
 
 
 # ===== Loss masking =====

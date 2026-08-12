@@ -191,6 +191,11 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         all_logits: list[torch.Tensor] = []
         total_loss = torch.tensor(0.0, device=device)
         metrics: dict[str, float | torch.Tensor] = {}
+        full_correct = torch.zeros((), dtype=torch.float32, device=device)
+        full_total = torch.zeros((), dtype=torch.float32, device=device)
+        accepted_draft_tokens = torch.zeros((), dtype=torch.float32, device=device)
+        anchor_total = torch.zeros((), dtype=torch.float32, device=device)
+        prefix_correct: torch.Tensor | None = None
 
         # Uniform valid_len keeps tensor shapes identical across loop
         # iterations, which torch.compile requires for stable codegen.
@@ -247,8 +252,38 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             total_loss = total_loss + step_loss
             metrics[f"loss_step_{step}"] = step_loss.detach().clone()
 
+            with torch.no_grad():
+                valid_targets = step_targets != _IGNORE_INDEX
+                correct = logits.argmax(dim=-1).eq(step_targets) & valid_targets
+                correct_count = correct.float().sum()
+                valid_count_float = valid_count.float()
+
+                metrics[f"position_{step}_acc_sum"] = correct_count
+                metrics[f"position_{step}_acc_total"] = valid_count_float
+                full_correct = full_correct + correct_count
+                full_total = full_total + valid_count_float
+
+                if prefix_correct is None:
+                    conditional_total = valid_count_float
+                    prefix_correct = correct
+                    anchor_total = valid_count_float
+                else:
+                    conditional_total = (prefix_correct & valid_targets).float().sum()
+                    prefix_correct = prefix_correct & correct
+
+                prefix_correct_count = prefix_correct.float().sum()
+                metrics[f"conditional_position_{step}_acc_sum"] = prefix_correct_count
+                metrics[f"conditional_position_{step}_acc_total"] = conditional_total
+                accepted_draft_tokens = accepted_draft_tokens + prefix_correct_count
+
             current_hidden = mtp_output
 
+        metrics["full_acc_sum"] = full_correct
+        metrics["full_acc_total"] = full_total
+        metrics["accepted_draft_len_sum"] = accepted_draft_tokens
+        metrics["accepted_draft_len_total"] = anchor_total.clone()
+        metrics["accept_len_sum"] = accepted_draft_tokens + anchor_total
+        metrics["accept_len_total"] = anchor_total.clone()
         metrics["loss_sum"] = total_loss.detach().clone()
         metrics["loss_total"] = torch.tensor(1.0, device=device)
 
