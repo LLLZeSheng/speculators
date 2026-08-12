@@ -121,7 +121,7 @@ def test_short_sequence_fewer_logits(mtp_model, seed):
     assert len(logits_list) == 1
 
 
-def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch):
+def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch, tmp_path):
     glm_config = pytest.importorskip(
         "transformers.models.glm_moe_dsa.configuration_glm_moe_dsa",
     )
@@ -189,4 +189,11 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch):
     assert not any(
         parameter.requires_grad
         for parameter in model.mtp_layers[0].self_attn.indexer.parameters()
+    )
+
+    model.save_pretrained(tmp_path)
+    reloaded = MTPDraftModel.from_pretrained(tmp_path)
+    assert not any(
+        parameter.requires_grad
+        for parameter in reloaded.mtp_layers[0].self_attn.indexer.parameters()
     )

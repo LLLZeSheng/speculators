@@ -125,6 +125,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             self.embed_tokens.weight.fill_(torch.nan)
             self.lm_head.weight.fill_(torch.nan)
         super().load_verifier_weights()
+        if self.config.transformer_layer_config.model_type == "glm_moe_dsa":
+            for parameter in self.mtp_layers[0].self_attn.indexer.parameters():
+                parameter.requires_grad_(False)
         del self.verifier_lm_head
 
     # requires `dynamic=False`. See #876
