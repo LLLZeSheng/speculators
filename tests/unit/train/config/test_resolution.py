@@ -51,6 +51,15 @@ def test_from_sources_records_winning_layer_in_memory():
     assert cfg._provenance["epochs"] == "default"
 
 
+def test_from_sources_accepts_exact_checkpoint_step_interval():
+    cfg = TrainConfig.from_sources(
+        cli={"verifier_name_or_path": "m", "checkpoint_steps": 1000},
+        argv=["train.py"],
+    )
+
+    assert cfg.flatten()["checkpoint_steps"] == 1000
+
+
 def test_from_sources_raises_instead_of_exiting():
     # checkpoint_freq=1.5 fails the schema validator (>1 must be a whole number).
     with pytest.raises(ValidationError):

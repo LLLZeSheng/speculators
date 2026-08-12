@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from speculators.model import SpeculatorModel
+from speculators.train import trainer as trainer_module
 from speculators.train.checkpointer import SingleGPUCheckpointer
 from speculators.train.trainer import Trainer, TrainerConfig
 
@@ -37,6 +38,45 @@ def _make_minimal_trainer(tmp_path: Path, checkpoint_freq: int, save_best: bool)
     trainer.optimizers = cast("list[torch.optim.Optimizer]", [object()])
     trainer.schedulers = []
     return trainer
+
+
+def test_checkpoint_steps_use_exact_global_optimizer_step_interval(
+    tmp_path: Path,
+) -> None:
+    config = TrainerConfig(
+        lr=1e-3,
+        num_epochs=1,
+        save_path=str(tmp_path),
+        checkpoint_freq=0.005,
+        checkpoint_steps=1000,
+    )
+
+    should_save = trainer_module._should_save_periodic_checkpoint
+
+    assert not should_save(config, global_step=75, local_step=75, num_steps=15_000)
+    assert not should_save(config, global_step=999, local_step=999, num_steps=15_000)
+    assert should_save(config, global_step=1000, local_step=925, num_steps=15_000)
+    assert not should_save(config, global_step=1001, local_step=926, num_steps=15_000)
+    assert should_save(config, global_step=2000, local_step=1925, num_steps=15_000)
+
+
+def test_checkpoint_steps_disable_periodic_saves_when_save_best_is_enabled(
+    tmp_path: Path,
+) -> None:
+    config = TrainerConfig(
+        lr=1e-3,
+        num_epochs=1,
+        save_path=str(tmp_path),
+        checkpoint_steps=1000,
+        save_best=True,
+    )
+
+    assert not trainer_module._should_save_periodic_checkpoint(
+        config,
+        global_step=1000,
+        local_step=1000,
+        num_steps=15_000,
+    )
 
 
 def test_previous_epoch_ignores_checkpoint_best(tmp_path: Path):

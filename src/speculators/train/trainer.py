@@ -125,11 +125,33 @@ class TrainerConfig(NamedTuple):
     scheduler_total_steps: int | None = None
     scheduler_num_cosine_cycles: float = 0.5
     checkpoint_freq: float = 1
+    checkpoint_steps: int | None = None
     save_best: bool = False
     hidden_states_dtype: torch.dtype = torch.bfloat16
     log_freq: int = 1
     fsdp_shard: bool = False
     max_steps: int | None = None
+
+
+def _should_save_periodic_checkpoint(
+    config: TrainerConfig,
+    *,
+    global_step: int,
+    local_step: int,
+    num_steps: int,
+) -> bool:
+    if config.save_best:
+        return False
+    if config.checkpoint_steps is not None:
+        return global_step > 0 and global_step % config.checkpoint_steps == 0
+    if config.checkpoint_freq >= 1:
+        return False
+
+    step_interval = max(1, round(num_steps * config.checkpoint_freq))
+    return (
+        local_step % step_interval == 0
+        and num_steps - local_step >= step_interval * MIN_STEP_PCT
+    )
 
 
 def _resolve_scheduler_steps(
@@ -443,11 +465,6 @@ class Trainer:
         if self.rank == 0:
             train_loader = tqdm(train_loader, desc=f"Epoch {epoch}")  # type: ignore[assignment]
 
-        step_interval = (
-            max(1, round(num_steps * self.config.checkpoint_freq))
-            if self.config.checkpoint_freq < 1
-            else None
-        )
         t_before_fetch = time.perf_counter()
         timer = _StepTimer()
         for local_step_rel, batch in enumerate(train_loader, 1):
@@ -556,12 +573,11 @@ class Trainer:
             ):
                 break
 
-            if (
-                step_interval is not None
-                and not self.config.save_best
-                and local_step % step_interval == 0
-                and num_steps - local_step >= step_interval * MIN_STEP_PCT
-                # Avoid saving back to back ay the end of each epoch
+            if _should_save_periodic_checkpoint(
+                self.config,
+                global_step=self.global_step,
+                local_step=local_step,
+                num_steps=num_steps,
             ):
                 self.maybe_save_checkpoint(epoch, local_step=local_step)
 

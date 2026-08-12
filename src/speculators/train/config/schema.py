@@ -387,6 +387,12 @@ class TrainerArgs(_Group):
         description="Save a checkpoint every N epochs. Values < 1 enable sub-epoch "
         "checkpointing (e.g. 0.5 = every half epoch).",
     )
+    checkpoint_steps: int | None = Field(
+        default=None,
+        ge=1,
+        description="Save a checkpoint every N global optimizer steps. When set, "
+        "this takes precedence over --checkpoint-freq for periodic saves.",
+    )
     save_best: bool = Field(
         default=False,
         description="Also point a checkpoint at the lowest validation loss.",
