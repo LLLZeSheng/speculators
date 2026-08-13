@@ -62,12 +62,17 @@ def set_seed(seed: int, deterministic: bool = False):
     random.seed(seed)
     np.random.seed(seed)  # noqa: NPY002
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
-    if deterministic:
+    if deterministic and torch.cuda.is_available():
         # For deterministic behavior (may impact performance)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+def empty_accelerator_cache() -> None:
+    """Release unused memory from the active CUDA or private-use accelerator."""
+    if torch.accelerator.current_accelerator() is not None:
+        torch.accelerator.empty_cache()
 
 
 def _maybe_apply_mrope_full_head_hack(
@@ -701,8 +706,7 @@ def main(cfg: TrainConfig):  # noqa: C901
     # Cleanup
     del trainer, draft_model
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_accelerator_cache()
     maybe_destroy_distributed()
 
 
