@@ -69,3 +69,24 @@ def test_multipack_sampler_can_cap_samples_per_batch():
         max_samples_per_batch=1,
     )
     assert all(len(batch) == 1 for batch in sampler)
+
+
+def test_single_sample_steps_are_length_aligned_across_ranks():
+    lengths = np.arange(1, 801)
+    categories = np.zeros_like(lengths)
+    per_rank_lengths = []
+    for rank in range(8):
+        sampler = StratifiedMultipackDistributedBatchSampler(
+            batch_max_length=1024,
+            lengths=lengths,
+            categories=categories,
+            category_fractions=[1.0],
+            steps_per_epoch=50,
+            num_replicas=8,
+            rank=rank,
+            seed=42,
+            max_samples_per_step=1,
+        )
+        per_rank_lengths.append([int(lengths[batch[0]]) for batch in sampler])
+    aligned = np.asarray(per_rank_lengths)
+    assert np.all(aligned.max(axis=0) - aligned.min(axis=0) <= 7)

@@ -336,6 +336,28 @@ class StratifiedMultipackDistributedBatchSampler(Sampler):
                 pools[category] = []
                 continue
             source_indices = np.flatnonzero(self.categories == category)
+            if self.max_samples_per_step == 1:
+                category_rng = np.random.default_rng(
+                    self.seed + category * 100_003 + epoch
+                )
+                shuffled = category_rng.permutation(source_indices)
+                ordered = shuffled[
+                    np.argsort(self.lengths[shuffled], kind="stable")
+                ]
+                group_count = len(ordered) // self.num_replicas
+                groups = ordered[: group_count * self.num_replicas].reshape(
+                    group_count, self.num_replicas
+                )
+                category_rng.shuffle(groups, axis=0)
+                if len(groups) < needed:
+                    raise ValueError(
+                        f"Category {category} provides {len(groups)} aligned "
+                        f"single-sample steps, fewer than the requested {needed}"
+                    )
+                pools[category] = [
+                    np.asarray([group[self.rank]]) for group in groups[:needed]
+                ]
+                continue
             sampler = MultipackDistributedBatchSamplerV2(
                 batch_max_length=self.batch_max_length,
                 lengths=self.lengths[source_indices],
