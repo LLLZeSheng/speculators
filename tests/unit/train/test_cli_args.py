@@ -208,6 +208,21 @@ def test_cached_hidden_states_finite_validation_can_be_disabled(monkeypatch):
     assert args.validate_cached_hidden_states_finite is False
 
 
+def test_generation_model_defaults_to_none(monkeypatch):
+    args = _parse(monkeypatch, [])
+
+    assert args.generation_model_name_or_path is None
+
+
+def test_generation_model_can_differ_from_verifier(monkeypatch):
+    args = _parse(
+        monkeypatch,
+        ["--generation-model-name-or-path", "glm52-w4a8-verifier"],
+    )
+
+    assert args.generation_model_name_or_path == "glm52-w4a8-verifier"
+
+
 # ---------------------------------------------------------------------------
 # --max-steps
 # ---------------------------------------------------------------------------

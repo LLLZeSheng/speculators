@@ -8,6 +8,8 @@ import torch
 from datasets import Dataset
 from safetensors.torch import save_file
 
+import scripts.train as train_module
+
 from speculators.models.eagle3.data import shift_batch
 from speculators.train.data import (
     ArrowDataset,
@@ -15,6 +17,22 @@ from speculators.train.data import (
     create_collate_fn,
     standardize_data_v1,
 )
+
+
+def test_generation_model_name_prefers_explicit_online_model():
+    resolver = getattr(train_module, "resolve_generation_model_name", None)
+
+    assert resolver is not None
+    assert resolver("/models/glm52-bf16", "glm52-w4a8-verifier") == (
+        "glm52-w4a8-verifier"
+    )
+
+
+def test_generation_model_name_falls_back_to_verifier():
+    resolver = getattr(train_module, "resolve_generation_model_name", None)
+
+    assert resolver is not None
+    assert resolver("/models/glm52-bf16", None) == "/models/glm52-bf16"
 
 
 def test_shift_batch():

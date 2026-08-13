@@ -273,6 +273,14 @@ class DataArgs(_Group):
 class GenerationArgs(_Group):
     """On-demand hidden-state generation against a vLLM endpoint."""
 
+    generation_model_name_or_path: str | None = Field(
+        default=None,
+        description=(
+            "Model ID expected from the online vLLM endpoint. Defaults to "
+            "--verifier-name-or-path. Set this when verifier inference uses a "
+            "quantized checkpoint while draft weights are initialized from BF16."
+        ),
+    )
     vllm_endpoint: str = Field(
         default="http://localhost:8000/v1",
         description="vLLM endpoint used to generate hidden states on demand. Only "

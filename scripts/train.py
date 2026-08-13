@@ -49,6 +49,14 @@ DRAFT_ARCH_CONFIGS: dict[str, type] = {
 MROPE_INVERSE_TOLERANCE = 1e-6
 
 
+def resolve_generation_model_name(
+    verifier_name_or_path: str,
+    generation_model_name_or_path: str | None,
+) -> str:
+    """Resolve the model ID expected from the online hidden-state service."""
+    return generation_model_name_or_path or verifier_name_or_path
+
+
 def set_seed(seed: int, deterministic: bool = False):
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -627,6 +635,10 @@ def main(cfg: TrainConfig):  # noqa: C901
     # the mirror complete so nothing read here was dropped during resolution.
     transfer = backend_cls.from_train_args(args, args.data_path)
 
+    generation_model = resolve_generation_model_name(
+        args.verifier_name_or_path,
+        args.generation_model_name_or_path,
+    )
     train_loader, val_loader = create_train_val_loaders(
         data_path=args.data_path,
         total_seq_len=args.total_seq_len,
@@ -637,7 +649,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         vllm_endpoint=args.vllm_endpoint,
         on_missing=args.on_missing,
         on_generate=args.on_generate,
-        verifier_name_or_path=args.verifier_name_or_path,
+        verifier_name_or_path=generation_model,
         request_timeout=args.request_timeout,
         max_retries=args.max_retries,
         hidden_size=hidden_size,
