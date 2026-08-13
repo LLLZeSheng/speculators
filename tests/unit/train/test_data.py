@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -9,7 +10,6 @@ from datasets import Dataset
 from safetensors.torch import save_file
 
 import scripts.train as train_module
-
 from speculators.models.eagle3.data import shift_batch
 from speculators.train.data import (
     ArrowDataset,
@@ -639,3 +639,74 @@ def test_arrow_dataset_on_generate_cache_creates_hidden_states_dir(tmp_path: Pat
     assert arrow_ds.transfer.hidden_states_path.is_dir()
     # And the cached file should exist
     assert (arrow_ds.transfer.hidden_states_path / "hs_0.safetensors").exists()
+
+
+def _online_arrow_dataset(tmp_path: Path, **kwargs) -> ArrowDataset:
+    data_path = tmp_path / "data"
+    Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6]],
+            "loss_mask": [[1, 1, 1, 1, 1, 1]],
+            "seq_len": [6],
+        }
+    ).save_to_disk(data_path)
+    return ArrowDataset(max_len=4, datapath=data_path, **kwargs)
+
+
+def test_arrow_dataset_force_generate_bypasses_cached_payload(tmp_path: Path):
+    transfer = Mock()
+    transfer.get_cached.side_effect = AssertionError("cache must not be read")
+    dataset = _online_arrow_dataset(
+        tmp_path,
+        transfer=transfer,
+        force_generate=True,
+    )
+    generated = {
+        "token_ids": torch.tensor([1, 2, 3, 4]),
+        "hidden_states": torch.zeros(4, 2, 3),
+    }
+    dataset._maybe_generate_hs = Mock(return_value=generated)
+
+    sample = dataset[0]
+
+    transfer.get_cached.assert_not_called()
+    assert sample is not None
+    assert sample["input_ids"].tolist() == [1, 2, 3, 4]
+
+
+def test_arrow_dataset_truncates_online_request_before_vllm(
+    tmp_path: Path, monkeypatch
+):
+    transfer = Mock()
+    transfer.get_generated.return_value = {
+        "token_ids": torch.tensor([1, 2, 3, 4]),
+        "hidden_states": torch.zeros(4, 2, 3),
+    }
+    dataset = _online_arrow_dataset(tmp_path, transfer=transfer)
+    dataset.client = Mock()
+    dataset.model = "verifier"
+    generate = Mock(return_value="handle")
+    monkeypatch.setattr("speculators.train.data.generate_hidden_states", generate)
+
+    dataset._maybe_generate_hs(0)
+
+    client_item = generate.call_args.args[2]
+    assert client_item["input_ids"] == [1, 2, 3, 4]
+
+
+def test_arrow_dataset_can_raise_online_generation_errors(tmp_path: Path, monkeypatch):
+    dataset = _online_arrow_dataset(
+        tmp_path,
+        transfer=Mock(),
+        force_generate=True,
+        on_generation_error="raise",
+    )
+    dataset.client = Mock()
+    dataset.model = "verifier"
+    monkeypatch.setattr(
+        "speculators.train.data.generate_hidden_states",
+        Mock(side_effect=RuntimeError("vLLM failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="vLLM failed"):
+        dataset[0]

@@ -20,7 +20,7 @@ def test_empty_accelerator_cache_uses_current_accelerator(monkeypatch):
     monkeypatch.setattr(
         train_module.torch.accelerator,
         "current_accelerator",
-        lambda: object(),
+        object,
     )
     monkeypatch.setattr(train_module.torch.accelerator, "empty_cache", empty_cache)
     cleanup = getattr(train_module, "empty_accelerator_cache", None)

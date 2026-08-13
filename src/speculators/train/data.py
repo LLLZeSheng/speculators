@@ -222,6 +222,8 @@ class ArrowDataset(BaseDataset):
         request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         validate_cached_hidden_states_finite: bool = True,
+        force_generate: bool = False,
+        on_generation_error: Literal["skip", "raise"] = "skip",
     ):
         self.data = load_from_disk(datapath)
         if not 0.0 < train_ratio <= 1.0:
@@ -262,9 +264,9 @@ class ArrowDataset(BaseDataset):
         self.model = model
         self.request_timeout = request_timeout
         self.max_retries = max_retries
-        self.validate_cached_hidden_states_finite = (
-            validate_cached_hidden_states_finite
-        )
+        self.force_generate = force_generate
+        self.on_generation_error = on_generation_error
+        self.validate_cached_hidden_states_finite = validate_cached_hidden_states_finite
 
         # Delay super init so that `_compute_approx_lengths` has required data
         super().__init__(max_len, transform, hidden_states_dtype)
@@ -289,6 +291,43 @@ class ArrowDataset(BaseDataset):
         self.model = model_id
         self.transfer.setup()
 
+    def _get_generation_item(self, index: int) -> dict:
+        dataset_item = dict(self.data[index])
+        input_ids = _as_token_list(dataset_item["input_ids"])
+        if len(input_ids) <= self.max_len:
+            return dataset_item
+        if "messages" in dataset_item and _has_multimodal_content(
+            dataset_item["messages"]
+        ):
+            raise ValueError(
+                "multimodal online samples cannot be safely truncated before "
+                "vLLM tokenization"
+            )
+        dataset_item["input_ids"] = input_ids[: self.max_len]
+        return dataset_item
+
+    def _handle_generation_error(
+        self,
+        index: int,
+        handle: str | None,
+        error: Exception,
+    ) -> None:
+        if handle is not None:
+            try:
+                self.transfer.delete(handle)
+            except FileNotFoundError:
+                pass
+            except Exception as cleanup_error:  # noqa: BLE001
+                warnings.warn(
+                    f"Failed to remove invalid generated hidden states for "
+                    f"sample {index}: {cleanup_error}",
+                    stacklevel=1,
+                )
+        message = f"Invalid generated hidden states for sample {index}: {error}"
+        if self.on_generation_error == "raise":
+            raise RuntimeError(message) from error
+        warnings.warn(f"{message}. Skipping...", stacklevel=1)
+
     def __len__(self):
         return len(self.data)
 
@@ -300,11 +339,11 @@ class ArrowDataset(BaseDataset):
         if not self.client:
             self._setup_client()
 
-        dataset_item = self.data[index]
-        client_item = build_client_item(dataset_item)
         handle: str | None = None
 
         try:
+            dataset_item = self._get_generation_item(index)
+            client_item = build_client_item(dataset_item)
             handle = generate_hidden_states(
                 self.client,  # type:ignore[arg-type]
                 self.model,  # type:ignore[arg-type]
@@ -325,41 +364,32 @@ class ArrowDataset(BaseDataset):
                     self.transfer.cache(handle, file_idx)
                 case "delete":
                     self.transfer.delete(handle)
-        except Exception as e:  # noqa: BLE001 - sample boundary must not kill training
-            if handle is not None:
-                try:
-                    self.transfer.delete(handle)
-                except FileNotFoundError:
-                    pass
-                except Exception as cleanup_error:  # noqa: BLE001
-                    warnings.warn(
-                        f"Failed to remove invalid generated hidden states for "
-                        f"sample {index}: {cleanup_error}",
-                        stacklevel=1,
-                    )
-            warnings.warn(
-                f"Invalid generated hidden states for sample {index}: {e}. Skipping...",
-                stacklevel=1,
-            )
+        except Exception as error:  # noqa: BLE001 - configured sample boundary
+            self._handle_generation_error(index, handle, error)
             return None
 
         return loaded_hs
 
-    def _get_raw_data(self, index):
+    def _get_raw_data(self, index):  # noqa: C901 - explicit policy state machine
         file_idx = self._map_to_file_idx(index)
-        try:
-            loaded_hs = self.transfer.get_cached(file_idx)
-        except Exception as e:  # noqa: BLE001 - corrupt cache entry is skippable
-            warnings.warn(
-                f"Failed to read cached hidden states for sample {index} "
-                f"(hs_{file_idx}.safetensors): {e}. Skipping...",
-                stacklevel=1,
-            )
-            return None
+        generated = self.force_generate
+        if self.force_generate:
+            loaded_hs = self._maybe_generate_hs(index)
+        else:
+            try:
+                loaded_hs = self.transfer.get_cached(file_idx)
+            except Exception as e:  # noqa: BLE001 - corrupt cache entry is skippable
+                warnings.warn(
+                    f"Failed to read cached hidden states for sample {index} "
+                    f"(hs_{file_idx}.safetensors): {e}. Skipping...",
+                    stacklevel=1,
+                )
+                return None
 
-        if loaded_hs is None:
+        if loaded_hs is None and not self.force_generate:
             match self.on_missing:
                 case "generate":
+                    generated = True
                     loaded_hs = self._maybe_generate_hs(index)
                 case "skip":
                     return None
@@ -382,7 +412,10 @@ class ArrowDataset(BaseDataset):
         #   "token_ids": [seq_len]
         # }
 
-        expected_tokens = _as_token_list(self.data[index]["input_ids"])
+        dataset_item = self.data[index]
+        expected_tokens = _as_token_list(dataset_item["input_ids"])
+        if generated:
+            expected_tokens = expected_tokens[: self.max_len]
         try:
             check_hidden_states(
                 loaded_hs,
@@ -405,7 +438,7 @@ class ArrowDataset(BaseDataset):
             "verifier_last_hidden_states": loaded_hs["hidden_states"][
                 :, -1
             ],  # [seq_len, hidden_size]
-            "loss_mask": self.data[index]["loss_mask"],  # [seq_len]
+            "loss_mask": dataset_item["loss_mask"][: len(expected_tokens)],
         }
 
 

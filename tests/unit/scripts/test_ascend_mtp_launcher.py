@@ -21,6 +21,7 @@ def _run(role: str, **overrides: str) -> subprocess.CompletedProcess[str]:
         "VERIFIER_HOST": "10.0.0.10",
         "MASTER_ADDR": "10.0.0.20",
         "NODE_RANK": "0",
+        "SMOKE_RUN_ID": "unit-test",
         **overrides,
     }
     return subprocess.run(  # noqa: S603
@@ -46,6 +47,8 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--hidden-states-path" in result.stdout
     assert "/mnt/xds/sfs/spec_train/online_hidden_states/glm52-w4a8" in result.stdout
     assert "--tensor-parallel-size 16" in result.stdout
+    assert "--max-model-len 8193" in result.stdout
+    assert "--required-devices 16" in result.stdout
     assert "--served-model-name glm52-w4a8-verifier" in result.stdout
 
 
@@ -66,7 +69,38 @@ def test_trainer_dry_run_builds_three_node_bf16_mtp3_job():
     assert "--fsdp-shard" in result.stdout
     assert "--on-missing generate" in result.stdout
     assert "--on-generate delete" in result.stdout
+    assert "--force-generate" in result.stdout
+    assert "--on-generation-error raise" in result.stdout
     assert "--checkpoint-steps 1000" in result.stdout
+
+
+def test_verifier_preflight_uses_tensor_parallel_device_count():
+    result = _run("verifier", VERIFIER_TP_SIZE="8", NPROC_PER_NODE="16")
+
+    assert result.returncode == 0, result.stderr
+    assert "--required-devices 8" in result.stdout
+
+
+def test_trainer_rejects_context_that_leaves_no_output_token():
+    result = _run(
+        "trainer",
+        TOTAL_SEQ_LEN="8192",
+        VERIFIER_MAX_MODEL_LEN="8192",
+    )
+
+    assert result.returncode != 0
+    assert "VERIFIER_MAX_MODEL_LEN" in result.stderr
+
+
+def test_trainer_accepts_8192_with_one_output_token_of_headroom():
+    result = _run(
+        "trainer",
+        TOTAL_SEQ_LEN="8192",
+        VERIFIER_MAX_MODEL_LEN="8193",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--total-seq-len 8192" in result.stdout
 
 
 def test_smoke_dry_run_caps_data_context_and_steps():
@@ -78,6 +112,15 @@ def test_smoke_dry_run_caps_data_context_and_steps():
     assert "--max-steps 2" in result.stdout
     assert "smoke" in result.stdout
     assert "--on-missing generate" in result.stdout
+    assert "-smoke-unit-test" in result.stdout
+    assert "--no-resume-from-checkpoint" in result.stdout
+
+
+def test_smoke_requires_a_shared_run_id():
+    result = _run("smoke", SMOKE_RUN_ID="")
+
+    assert result.returncode != 0
+    assert "SMOKE_RUN_ID" in result.stderr
 
 
 @pytest.mark.parametrize("role", ["", "unknown"])

@@ -299,6 +299,16 @@ class GenerationArgs(_Group):
         "--on-missing=generate). 'delete' discards it once loaded; 'cache' stores it "
         "in the hidden states path, enabling hybrid online/offline training.",
     )
+    force_generate: bool = Field(
+        default=False,
+        description="Always request hidden states from vLLM and bypass cached files. "
+        "Use this when the online verifier differs from the cache provenance.",
+    )
+    on_generation_error: Literal["skip", "raise"] = Field(
+        default="skip",
+        description="Behaviour when online hidden-state generation fails. 'skip' "
+        "preserves best-effort training; 'raise' terminates the job.",
+    )
     request_timeout: float = Field(
         default=DEFAULT_REQUEST_TIMEOUT,
         description="Timeout in seconds for each individual vLLM request. Only applies "

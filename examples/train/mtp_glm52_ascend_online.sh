@@ -25,6 +25,7 @@ VERIFIER_HOST=${VERIFIER_HOST:-}
 VERIFIER_BIND_HOST=${VERIFIER_BIND_HOST:-0.0.0.0}
 VERIFIER_PORT=${VERIFIER_PORT:-8000}
 VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-16}
+VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-8193}
 TARGET_LAYER_ID=${TARGET_LAYER_ID:-78}
 
 NNODES=${NNODES:-3}
@@ -47,7 +48,8 @@ MAX_STEPS=${MAX_STEPS:-}
 RUN_NAME=${RUN_NAME:-glm52-w4a8-ascend-mtp3}
 
 SMOKE_SAMPLES=${SMOKE_SAMPLES:-64}
-SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-/mnt/xds/sfs/spec_train/smoke/glm52-mtp3-tokens-64}
+SMOKE_RUN_ID=${SMOKE_RUN_ID:-}
+SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-/mnt/xds/sfs/spec_train/smoke/glm52-mtp3-tokens-64-${SMOKE_RUN_ID:-unset}}
 MTP_PREPARE_TIMEOUT=${MTP_PREPARE_TIMEOUT:-3600}
 
 ASCEND_DEVICES=${ASCEND_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
@@ -109,7 +111,8 @@ run_logged() {
 
 validate_role() {
     case "$ROLE" in
-        preflight | verifier | trainer | smoke) ;;
+        preflight | verifier | trainer) ;;
+        smoke) require_value SMOKE_RUN_ID ;;
         *) fail "ROLE must be one of: preflight, verifier, trainer, smoke" ;;
     esac
 }
@@ -121,6 +124,14 @@ validate_trainer_topology() {
     [[ $NODE_RANK =~ ^[0-9]+$ ]] || fail "NODE_RANK must be an integer"
     ((NODE_RANK >= 0 && NODE_RANK < NNODES)) || \
         fail "NODE_RANK must be in [0, $((NNODES - 1))]"
+}
+
+validate_context_window() {
+    local input_length=$1
+    [[ $input_length =~ ^[0-9]+$ && $VERIFIER_MAX_MODEL_LEN =~ ^[0-9]+$ ]] || \
+        fail "TOTAL_SEQ_LEN and VERIFIER_MAX_MODEL_LEN must be integers"
+    ((input_length < VERIFIER_MAX_MODEL_LEN)) || \
+        fail "VERIFIER_MAX_MODEL_LEN must exceed the online input length by at least 1"
 }
 
 show_config() {
@@ -142,13 +153,17 @@ EOF
 }
 
 preflight_args() {
+    local required_devices=$NPROC_PER_NODE
+    if [[ $ROLE == verifier ]]; then
+        required_devices=$VERIFIER_TP_SIZE
+    fi
     PREFLIGHT_CMD=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/preflight_ascend_mtp.py"
         --bf16-model "$MTP_INIT_MODEL_PATH"
         --verifier-model "$VERIFIER_MODEL_PATH"
         --data-path "$DATA_PATH"
         --hidden-states-path "$HIDDEN_STATES_PATH"
-        --required-devices "$NPROC_PER_NODE"
+        --required-devices "$required_devices"
     )
     if [[ $DRY_RUN == 1 ]]; then
         PREFLIGHT_CMD+=(--skip-device-check)
@@ -174,7 +189,7 @@ run_verifier() {
         --port "$VERIFIER_PORT"
         --served-model-name "$SERVED_MODEL_NAME"
         --tensor-parallel-size "$VERIFIER_TP_SIZE"
-        --max-model-len "$TOTAL_SEQ_LEN"
+        --max-model-len "$VERIFIER_MAX_MODEL_LEN"
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then
@@ -270,12 +285,16 @@ run_trainer() {
     if [[ $mode == smoke ]]; then
         prepare_smoke_data
         effective_data=$SMOKE_DATA_PATH
-        effective_output="${OUTPUT_PATH}-smoke"
-        effective_log_root="${LOG_ROOT}-smoke"
+        effective_output="${OUTPUT_PATH}-smoke-${SMOKE_RUN_ID}"
+        effective_log_root="${LOG_ROOT}-smoke-${SMOKE_RUN_ID}"
         effective_seq_len=1024
         effective_max_steps=2
-        effective_run_name="${RUN_NAME}-smoke"
+        effective_run_name="${RUN_NAME}-smoke-${SMOKE_RUN_ID}"
+        if [[ $DRY_RUN != 1 && -e $effective_output ]]; then
+            fail "smoke output already exists; choose a fresh SMOKE_RUN_ID: $effective_output"
+        fi
     fi
+    validate_context_window "$effective_seq_len"
 
     local cmd=(
         "$TORCHRUN_BIN"
@@ -295,6 +314,8 @@ run_trainer() {
         --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
         --on-missing generate
         --on-generate delete
+        --force-generate
+        --on-generation-error raise
         --train-data-ratio "$TRAIN_DATA_RATIO"
         --save-path "$effective_output"
         --log-dir "$effective_log_root/metrics"
@@ -320,6 +341,9 @@ run_trainer() {
     )
     if [[ -n $effective_max_steps ]]; then
         cmd+=(--max-steps "$effective_max_steps")
+    fi
+    if [[ $mode == smoke ]]; then
+        cmd+=(--no-resume-from-checkpoint)
     fi
     local log_file="$effective_log_root/trainer-node${NODE_RANK}.log"
     run_logged "$log_file" "${cmd[@]}"

@@ -202,9 +202,7 @@ def test_no_norm_output_flag(monkeypatch):
 
 
 def test_cached_hidden_states_finite_validation_can_be_disabled(monkeypatch):
-    args = _parse(
-        monkeypatch, ["--no-validate-cached-hidden-states-finite"]
-    )
+    args = _parse(monkeypatch, ["--no-validate-cached-hidden-states-finite"])
     assert args.validate_cached_hidden_states_finite is False
 
 
@@ -221,6 +219,16 @@ def test_generation_model_can_differ_from_verifier(monkeypatch):
     )
 
     assert args.generation_model_name_or_path == "glm52-w4a8-verifier"
+
+
+def test_online_generation_safety_flags(monkeypatch):
+    args = _parse(
+        monkeypatch,
+        ["--force-generate", "--on-generation-error", "raise"],
+    )
+
+    assert args.force_generate is True
+    assert args.on_generation_error == "raise"
 
 
 # ---------------------------------------------------------------------------

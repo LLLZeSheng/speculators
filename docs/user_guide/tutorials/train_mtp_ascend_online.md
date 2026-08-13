@@ -46,9 +46,10 @@ export LOG_ROOT=/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3
 
 `DATA_PATH` may point at the existing DSpark token dataset. It must contain
 `input_ids`, `loss_mask`, and `seq_len`. Cached hidden states from another
-verifier are not read: `--on-missing generate` asks the W4A8 service for fresh
-hidden states and `--on-generate delete` removes each transient payload after
-the trainer consumes it.
+verifier are not read. The launcher uses `--force-generate` to bypass cached
+files, asks the W4A8 service for every sample, and removes each transient
+payload after the trainer consumes it. Online generation failures terminate
+the job instead of producing empty training batches.
 
 ## Dry Run
 
@@ -83,10 +84,11 @@ ROLE=preflight \
   bash examples/train/mtp_glm52_ascend_online.sh
 ```
 
-Preflight reads checkpoint metadata, verifies the native MTP layer, compares
-the BF16 and W4A8 architecture and tokenizer assets, checks the token dataset,
-probes shared storage, and verifies 16 visible NPUs. It does not load the full
-GLM checkpoint.
+Preflight reads checkpoint metadata, verifies the critical native MTP tensors
+and referenced shards, compares the BF16 and W4A8 architecture and tokenizer
+assets, checks the token dataset, probes shared storage, verifies the pinned
+software versions, and verifies 16 visible NPUs. It does not load the full GLM
+checkpoint.
 
 ## Start the Verifier
 
@@ -97,8 +99,8 @@ ROLE=verifier \
   bash examples/train/mtp_glm52_ascend_online.sh
 ```
 
-The service uses tensor parallel size 16 and exposes
-`glm52-w4a8-verifier` on port 8000. Its log is:
+The service uses tensor parallel size 16, an 8193-token maximum request length,
+and exposes `glm52-w4a8-verifier` on port 8000. Its log is:
 
 ```text
 /mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/verifier/verifier.log
@@ -116,30 +118,42 @@ Start these three commands close together in separate terminals or through the
 cluster launcher. Node 0 atomically converts the BF16 native MTP layer once;
 nodes 1 and 2 wait for its shared ready marker.
 
+Choose one fresh identifier and export the same value on all three trainer
+nodes. Reusing an identifier is rejected when its output directory exists:
+
+```bash
+export SMOKE_RUN_ID=smoke-20260813-01
+```
+
 Trainer node 0:
 
 ```bash
-ROLE=smoke VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=0 \
+ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
+  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=0 \
   bash examples/train/mtp_glm52_ascend_online.sh
 ```
 
 Trainer node 1:
 
 ```bash
-ROLE=smoke VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=1 \
+ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
+  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=1 \
   bash examples/train/mtp_glm52_ascend_online.sh
 ```
 
 Trainer node 2:
 
 ```bash
-ROLE=smoke VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=2 \
+ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
+  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=2 \
   bash examples/train/mtp_glm52_ascend_online.sh
 ```
 
-Smoke mode selects 64 samples into shared storage, uses a 1024-token context,
-and performs two optimizer steps through the real online hidden-state path. It
-writes separate `-smoke` checkpoint, metric, and log directories. Treat smoke
+Smoke mode selects 64 samples into run-specific shared storage, truncates each
+online request to a 1024-token context, and performs two optimizer steps through
+the real online hidden-state path. It writes separate
+`-smoke-$SMOKE_RUN_ID` checkpoint, metric, and log directories and disables
+checkpoint resume. Treat smoke
 as successful only when all 48 ranks finish without HCCL, OOM, unsupported
 operator, non-finite loss, or checkpoint errors.
 
@@ -158,7 +172,10 @@ training configuration uses 4096 tokens per NPU batch, BF16 hidden states,
 AdamW, cosine decay with 3% warmup, five epochs, and a checkpoint every 1000
 global steps. The 4096-token default is conservative because FSDP does not
 shard activations. Increase it to 8192 only after an actual 910B3 smoke run
-demonstrates sufficient memory headroom. Override any setting when needed:
+demonstrates sufficient memory headroom. The verifier context must be at least
+one token longer because hidden-state extraction requests one output token;
+the launcher rejects `TOTAL_SEQ_LEN >= VERIFIER_MAX_MODEL_LEN`. Override any
+setting when needed:
 
 ```bash
 EPOCHS=1 CHECKPOINT_STEPS=500 TOTAL_SEQ_LEN=4096 ROLE=trainer \
@@ -192,10 +209,14 @@ tensorboard \
 ## Stop and Resume
 
 Send `SIGTERM` or press Ctrl-C on every trainer node. The launcher forwards the
-signal to `torchrun`; the trainer's graceful-shutdown path saves an interrupted
-checkpoint. Restart all three trainer roles with the same `OUTPUT_PATH`,
-`MASTER_ADDR`, and node ranks to resume. Stop the verifier only after every
-trainer process has exited.
+signal to `torchrun`; the trainer's graceful-shutdown path saves a manual
+recovery snapshot under `OUTPUT_PATH/interrupted`. Automatic resume deliberately
+ignores that directory and restarts from the latest numbered checkpoint. To
+load the interrupted weights instead, first follow the warning printed by the
+checkpointer and rename `interrupted` to a new numeric checkpoint directory.
+That recovery starts at an epoch boundary and does not preserve the exact
+within-epoch data position. Stop the verifier only after every trainer process
+has exited.
 
 If preflight reports an existing MTP or smoke directory without `.ready`, do
 not remove it automatically. Inspect whether another node is still producing

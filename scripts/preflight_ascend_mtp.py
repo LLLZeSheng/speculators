@@ -40,6 +40,36 @@ _TOKENIZER_FILES = (
     "added_tokens.json",
 )
 _HTTP_OK = 200
+_EXPECTED_VERSIONS = {
+    "torch-npu": "2.10.0.post2",
+    "vllm": "0.23.1rc1.dev1451+gd02df748b.d20260811",
+    "vllm-ascend": "0.23.0rc1",
+}
+_GLM_MTP_NON_EXPERT_SUFFIXES = (
+    "eh_proj.weight",
+    "hnorm.weight",
+    "enorm.weight",
+    "shared_head.norm.weight",
+    "self_attn.q_a_proj.weight",
+    "self_attn.q_a_layernorm.weight",
+    "self_attn.q_b_proj.weight",
+    "self_attn.kv_a_proj_with_mqa.weight",
+    "self_attn.kv_a_layernorm.weight",
+    "self_attn.kv_b_proj.weight",
+    "self_attn.o_proj.weight",
+    "self_attn.indexer.wq_b.weight",
+    "self_attn.indexer.wk.weight",
+    "self_attn.indexer.k_norm.weight",
+    "self_attn.indexer.k_norm.bias",
+    "self_attn.indexer.weights_proj.weight",
+    "mlp.gate.weight",
+    "mlp.gate.e_score_correction_bias",
+    "mlp.shared_experts.gate_proj.weight",
+    "mlp.shared_experts.up_proj.weight",
+    "mlp.shared_experts.down_proj.weight",
+    "input_layernorm.weight",
+    "post_attention_layernorm.weight",
+)
 
 
 def _load_model_config(model_path: str | Path) -> dict[str, Any]:
@@ -112,35 +142,83 @@ def compare_tokenizers(
     return compared
 
 
-def validate_native_mtp_weights(model_path: str | Path, layer_idx: int) -> int:
-    """Count native GLM MTP keys without loading any tensor payloads."""
-    root = Path(model_path)
+def _load_checkpoint_keys(root: Path) -> tuple[list[str], dict[str, str] | None]:
     index_path = root / "model.safetensors.index.json"
     if index_path.is_file():
         try:
             weight_map = json.loads(index_path.read_text())["weight_map"]
-            keys = weight_map.keys()
+            if not isinstance(weight_map, dict):
+                raise TypeError("weight_map must be an object")
+            return list(weight_map), weight_map
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
             raise PreflightError(
                 f"invalid safetensors index {index_path}: {exc}"
             ) from exc
-    else:
-        single_path = root / "model.safetensors"
-        if not single_path.is_file():
-            raise PreflightError(f"no safetensors checkpoint found under {root}")
-        try:
-            with safe_open(str(single_path), framework="pt") as handle:
-                keys = list(handle.keys())
-        except (OSError, ValueError) as exc:
-            raise PreflightError(
-                f"invalid safetensors file {single_path}: {exc}"
-            ) from exc
+    single_path = root / "model.safetensors"
+    if not single_path.is_file():
+        raise PreflightError(f"no safetensors checkpoint found under {root}")
+    try:
+        with safe_open(str(single_path), framework="pt") as handle:
+            return list(handle.keys()), None
+    except (OSError, ValueError) as exc:
+        raise PreflightError(f"invalid safetensors file {single_path}: {exc}") from exc
+
+
+def validate_native_mtp_weights(model_path: str | Path, layer_idx: int) -> int:
+    """Count native GLM MTP keys without loading any tensor payloads."""
+    root = Path(model_path)
+    keys, weight_map = _load_checkpoint_keys(root)
 
     prefix = f"model.layers.{layer_idx}."
-    count = sum(key.startswith(prefix) for key in keys)
+    mtp_keys = [key for key in keys if key.startswith(prefix)]
+    count = len(mtp_keys)
     if count == 0:
         raise PreflightError(f"no native MTP weights found with prefix {prefix}")
+    config = _load_model_config(root)
+    num_experts = config.get("n_routed_experts")
+    if not isinstance(num_experts, int) or num_experts <= 0:
+        raise PreflightError("model config n_routed_experts must be a positive integer")
+    required = {prefix + suffix for suffix in _GLM_MTP_NON_EXPERT_SUFFIXES}
+    required.update(
+        prefix + f"mlp.experts.{expert}.{projection}_proj.weight"
+        for expert in range(num_experts)
+        for projection in ("gate", "up", "down")
+    )
+    missing = sorted(required - set(mtp_keys))
+    if missing:
+        raise PreflightError(f"native MTP critical tensors are missing: {missing}")
+    unexpected = sorted(set(mtp_keys) - required)
+    if unexpected:
+        raise PreflightError(f"native MTP tensors are unexpected: {unexpected}")
+    if weight_map is not None:
+        _validate_indexed_tensors(root, weight_map, mtp_keys)
     return count
+
+
+def _validate_indexed_tensors(
+    root: Path,
+    weight_map: dict[str, str],
+    keys: list[str],
+) -> None:
+    shard_to_keys: dict[str, set[str]] = {}
+    for key in keys:
+        shard = weight_map[key]
+        if not isinstance(shard, str) or not (root / shard).is_file():
+            raise PreflightError(f"native MTP index references missing shard: {shard}")
+        shard_to_keys.setdefault(shard, set()).add(key)
+
+    for shard, expected in shard_to_keys.items():
+        try:
+            with safe_open(str(root / shard), framework="pt") as handle:
+                absent = sorted(expected - set(handle.keys()))
+        except Exception as exc:
+            raise PreflightError(
+                f"cannot open native MTP shard {shard}: {exc}"
+            ) from exc
+        if absent:
+            raise PreflightError(
+                f"native MTP tensors absent from shard {shard}: {absent}"
+            )
 
 
 def validate_dataset(data_path: str | Path) -> int:
@@ -195,6 +273,13 @@ def validate_npu_runtime(
             f"torch_npu is not installed or importable: {exc}"
         ) from exc
 
+    expected_torch_npu = _EXPECTED_VERSIONS["torch-npu"]
+    if torch_npu_version != expected_torch_npu:
+        raise PreflightError(
+            f"torch-npu version mismatch: expected {expected_torch_npu}, "
+            f"got {torch_npu_version}"
+        )
+
     accelerator = torch.accelerator.current_accelerator()
     device_type = getattr(accelerator, "type", None)
     if device_type not in {"npu", "privateuseone"}:
@@ -216,11 +301,18 @@ def validate_npu_runtime(
     if require_vllm:
         for distribution in ("vllm", "vllm-ascend"):
             try:
-                result[distribution] = importlib.metadata.version(distribution)
+                installed = importlib.metadata.version(distribution)
             except importlib.metadata.PackageNotFoundError as exc:
                 raise PreflightError(
                     f"required package is missing: {distribution}"
                 ) from exc
+            expected = _EXPECTED_VERSIONS[distribution]
+            if installed != expected:
+                raise PreflightError(
+                    f"{distribution} version mismatch: expected {expected}, "
+                    f"got {installed}"
+                )
+            result[distribution] = installed
     return result
 
 

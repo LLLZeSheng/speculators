@@ -16,10 +16,44 @@ def _write_config(path: Path, **updates) -> Path:
         "hidden_size": 64,
         "vocab_size": 128,
         "num_hidden_layers": 3,
+        "n_routed_experts": 1,
     }
     config.update(updates)
     (path / "config.json").write_text(json.dumps(config))
     return path
+
+
+def _native_mtp_tensors(layer_idx: int = 3) -> dict[str, torch.Tensor]:
+    prefix = f"model.layers.{layer_idx}."
+    suffixes = {
+        "eh_proj.weight",
+        "hnorm.weight",
+        "enorm.weight",
+        "shared_head.norm.weight",
+        "self_attn.q_a_proj.weight",
+        "self_attn.q_a_layernorm.weight",
+        "self_attn.q_b_proj.weight",
+        "self_attn.kv_a_proj_with_mqa.weight",
+        "self_attn.kv_a_layernorm.weight",
+        "self_attn.kv_b_proj.weight",
+        "self_attn.o_proj.weight",
+        "self_attn.indexer.wq_b.weight",
+        "self_attn.indexer.wk.weight",
+        "self_attn.indexer.k_norm.weight",
+        "self_attn.indexer.k_norm.bias",
+        "self_attn.indexer.weights_proj.weight",
+        "mlp.gate.weight",
+        "mlp.gate.e_score_correction_bias",
+        "mlp.shared_experts.gate_proj.weight",
+        "mlp.shared_experts.up_proj.weight",
+        "mlp.shared_experts.down_proj.weight",
+        "mlp.experts.0.gate_proj.weight",
+        "mlp.experts.0.up_proj.weight",
+        "mlp.experts.0.down_proj.weight",
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+    }
+    return {prefix + suffix: torch.ones(1) for suffix in suffixes}
 
 
 def test_compare_model_configs_ignores_quantization_metadata(tmp_path):
@@ -94,25 +128,21 @@ def test_compare_tokenizers_rejects_mismatch(tmp_path):
 
 def test_validate_native_mtp_weights_accepts_index(tmp_path):
     model = _write_config(tmp_path / "model")
-    index = {
-        "weight_map": {
-            "model.layers.2.self_attn.q_proj.weight": "part-1.safetensors",
-            "model.layers.3.eh_proj.weight": "part-2.safetensors",
-        }
-    }
+    shard = model / "part-2.safetensors"
+    tensors = _native_mtp_tensors()
+    save_file(tensors, shard)
+    index = {"weight_map": dict.fromkeys(tensors, "part-2.safetensors")}
     (model / "model.safetensors.index.json").write_text(json.dumps(index))
 
-    assert preflight.validate_native_mtp_weights(model, 3) == 1
+    assert preflight.validate_native_mtp_weights(model, 3) == len(tensors)
 
 
 def test_validate_native_mtp_weights_accepts_single_file(tmp_path):
     model = _write_config(tmp_path / "model")
-    save_file(
-        {"model.layers.3.eh_proj.weight": torch.ones(1)},
-        model / "model.safetensors",
-    )
+    tensors = _native_mtp_tensors()
+    save_file(tensors, model / "model.safetensors")
 
-    assert preflight.validate_native_mtp_weights(model, 3) == 1
+    assert preflight.validate_native_mtp_weights(model, 3) == len(tensors)
 
 
 def test_validate_native_mtp_weights_rejects_missing_layer(tmp_path):
@@ -122,6 +152,54 @@ def test_validate_native_mtp_weights_rejects_missing_layer(tmp_path):
     )
 
     with pytest.raises(preflight.PreflightError, match="model.layers.3"):
+        preflight.validate_native_mtp_weights(model, 3)
+
+
+def test_validate_native_mtp_weights_rejects_missing_critical_key(tmp_path):
+    model = _write_config(tmp_path / "model")
+    save_file(
+        {"model.layers.3.eh_proj.weight": torch.ones(1)},
+        model / "model.safetensors",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="critical"):
+        preflight.validate_native_mtp_weights(model, 3)
+
+
+def test_validate_native_mtp_weights_rejects_missing_shard(tmp_path):
+    model = _write_config(tmp_path / "model")
+    keys = dict.fromkeys(_native_mtp_tensors(), "missing.safetensors")
+    (model / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": keys})
+    )
+
+    with pytest.raises(preflight.PreflightError, match="shard"):
+        preflight.validate_native_mtp_weights(model, 3)
+
+
+def test_validate_native_mtp_weights_rejects_index_key_absent_from_shard(tmp_path):
+    model = _write_config(tmp_path / "model")
+    tensors = _native_mtp_tensors()
+    missing_key = next(iter(tensors))
+    save_file(
+        {key: tensor for key, tensor in tensors.items() if key != missing_key},
+        model / "part.safetensors",
+    )
+    (model / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": dict.fromkeys(tensors, "part.safetensors")})
+    )
+
+    with pytest.raises(preflight.PreflightError, match="absent from shard"):
+        preflight.validate_native_mtp_weights(model, 3)
+
+
+def test_validate_native_mtp_weights_rejects_unexpected_key(tmp_path):
+    model = _write_config(tmp_path / "model")
+    tensors = _native_mtp_tensors()
+    tensors["model.layers.3.unsupported.weight"] = torch.ones(1)
+    save_file(tensors, model / "model.safetensors")
+
+    with pytest.raises(preflight.PreflightError, match="unexpected"):
         preflight.validate_native_mtp_weights(model, 3)
 
 
@@ -206,6 +284,41 @@ def test_validate_npu_runtime_rejects_wrong_device(monkeypatch):
 
 def test_validate_npu_runtime_can_be_skipped():
     assert preflight.validate_npu_runtime(16, skip=True) == {"skipped": True}
+
+
+def test_validate_npu_runtime_rejects_version_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        lambda _name: "2.9.0",
+    )
+    monkeypatch.setattr(preflight.importlib, "import_module", lambda _name: object())
+
+    with pytest.raises(preflight.PreflightError, match="torch-npu"):
+        preflight.validate_npu_runtime(16)
+
+
+def test_validate_npu_runtime_rejects_vllm_version_mismatch(monkeypatch):
+    versions = {
+        "torch-npu": "2.10.0.post2",
+        "vllm": "0.22.0",
+        "vllm-ascend": "0.23.0rc1",
+    }
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        versions.__getitem__,
+    )
+    monkeypatch.setattr(preflight.importlib, "import_module", lambda _name: object())
+    monkeypatch.setattr(
+        preflight.torch.accelerator,
+        "current_accelerator",
+        _fake_accelerator,
+    )
+    monkeypatch.setattr(preflight.torch.accelerator, "device_count", lambda: 16)
+
+    with pytest.raises(preflight.PreflightError, match="vllm version mismatch"):
+        preflight.validate_npu_runtime(16, require_vllm=True)
 
 
 def test_validate_endpoint_uses_health_url(monkeypatch):

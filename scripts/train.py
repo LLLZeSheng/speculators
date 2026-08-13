@@ -666,6 +666,8 @@ def main(cfg: TrainConfig):  # noqa: C901
         validate_cached_hidden_states_finite=(
             args.validate_cached_hidden_states_finite
         ),
+        force_generate=args.force_generate,
+        on_generation_error=args.on_generation_error,
     )
 
     # Get trainer kwargs from model class
