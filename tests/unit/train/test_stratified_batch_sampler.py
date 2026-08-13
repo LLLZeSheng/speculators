@@ -1,6 +1,7 @@
 import numpy as np
 
 from speculators.train.distributed_batch_sampler import (
+    MultipackDistributedBatchSamplerV2,
     StratifiedMultipackDistributedBatchSampler,
 )
 
@@ -55,5 +56,16 @@ def test_stratified_sampler_can_cap_samples_per_step():
         num_replicas=2,
         rank=0,
         max_samples_per_step=1,
+    )
+    assert all(len(batch) == 1 for batch in sampler)
+
+
+def test_multipack_sampler_can_cap_samples_per_batch():
+    sampler = MultipackDistributedBatchSamplerV2(
+        batch_max_length=64,
+        lengths=[8] * 200,
+        num_replicas=2,
+        rank=0,
+        max_samples_per_batch=1,
     )
     assert all(len(batch) == 1 for batch in sampler)

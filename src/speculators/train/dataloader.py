@@ -42,6 +42,7 @@ def _setup_dataloader(
     category_fractions: tuple[float, ...] = (),
     stratified_steps_per_epoch: int | None = None,
     stratified_max_samples_per_step: int | None = None,
+    packed_max_samples_per_batch: int | None = None,
 ) -> DataLoader:
     if categories is not None:
         if not category_fractions or stratified_steps_per_epoch is None:
@@ -65,6 +66,7 @@ def _setup_dataloader(
             lengths=dataset.approx_lengths,
             num_replicas=get_dp_size(),
             rank=get_dp_rank(),
+            max_samples_per_batch=packed_max_samples_per_batch,
         )
     use_workers = num_workers > 0
     return DataLoader(
@@ -212,6 +214,7 @@ def create_train_val_loaders(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         preprocess=preprocess,
+        packed_max_samples_per_batch=long_context_max_samples_per_step,
     )
 
     return train_loader, val_loader

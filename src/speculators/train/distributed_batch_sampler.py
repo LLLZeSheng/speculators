@@ -171,6 +171,7 @@ class MultipackDistributedBatchSamplerV2(Sampler):
         rank: int,
         truncate_long_samples: bool = True,
         seed: int = 0,
+        max_samples_per_batch: int | None = None,
     ):
         """Efficient distributed packing sampler for linear attention style models
 
@@ -189,6 +190,9 @@ class MultipackDistributedBatchSamplerV2(Sampler):
         self.epoch = 0
         self.batch_max_length = batch_max_length
         self.lengths = np.array(lengths)
+        self.max_samples_per_batch = max_samples_per_batch
+        if max_samples_per_batch is not None and max_samples_per_batch <= 0:
+            raise ValueError("max_samples_per_batch must be positive")
 
         self.valid_indices = np.nonzero(self.lengths <= self.batch_max_length)[0]
         if len(self.valid_indices) < len(self.lengths):
@@ -244,6 +248,8 @@ class MultipackDistributedBatchSamplerV2(Sampler):
         # Translate them so that they are instead relative to the overall unshuffled
         # self.lengths array.
         batches = [indices[batch] for batch in batches]
+        if self.max_samples_per_batch is not None:
+            batches = [batch[: self.max_samples_per_batch] for batch in batches]
 
         # Cache result
         self._cached_generated_batches = (epoch, batches)
