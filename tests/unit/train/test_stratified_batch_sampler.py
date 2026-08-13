@@ -43,3 +43,17 @@ def test_stratified_sampler_uses_largest_remainders():
     )
     schedule = [int(sampler.categories[batch[0]]) for batch in sampler]
     assert np.bincount(schedule, minlength=3).tolist() == [9, 3, 1]
+
+
+def test_stratified_sampler_can_cap_samples_per_step():
+    sampler = StratifiedMultipackDistributedBatchSampler(
+        batch_max_length=64,
+        lengths=[8] * 200,
+        categories=[0] * 200,
+        category_fractions=[1.0],
+        steps_per_epoch=10,
+        num_replicas=2,
+        rank=0,
+        max_samples_per_step=1,
+    )
+    assert all(len(batch) == 1 for batch in sampler)

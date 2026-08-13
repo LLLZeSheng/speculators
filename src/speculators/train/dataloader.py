@@ -41,6 +41,7 @@ def _setup_dataloader(
     categories: list[int] | None = None,
     category_fractions: tuple[float, ...] = (),
     stratified_steps_per_epoch: int | None = None,
+    stratified_max_samples_per_step: int | None = None,
 ) -> DataLoader:
     if categories is not None:
         if not category_fractions or stratified_steps_per_epoch is None:
@@ -56,6 +57,7 @@ def _setup_dataloader(
             steps_per_epoch=stratified_steps_per_epoch,
             num_replicas=get_dp_size(),
             rank=get_dp_rank(),
+            max_samples_per_step=stratified_max_samples_per_step,
         )
     else:
         batch_sampler = MultipackDistributedBatchSamplerV2(
@@ -109,6 +111,7 @@ def create_train_val_loaders(
     long_context_excluded_token_ids: tuple[int, ...] = (),
     long_context_step_fractions: tuple[float, ...] = (),
     long_context_steps_per_epoch: int | None = None,
+    long_context_max_samples_per_step: int | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -199,6 +202,7 @@ def create_train_val_loaders(
         ),
         category_fractions=long_context_step_fractions,
         stratified_steps_per_epoch=long_context_steps_per_epoch,
+        stratified_max_samples_per_step=long_context_max_samples_per_step,
     )
     val_loader = _setup_dataloader(
         val_dataset,

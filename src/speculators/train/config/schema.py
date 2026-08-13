@@ -270,6 +270,14 @@ class DataArgs(_Group):
         ge=1,
         description="Number of stratified optimizer steps generated per epoch.",
     )
+    long_context_max_samples_per_step: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional per-rank sample cap for each stratified optimizer step. "
+            "Use 1 to avoid redundant I/O when max_anchors already caps supervision."
+        ),
+    )
     max_anchors: int = Field(
         default=3072,
         description="Maximum anchor positions for DFlash, DSpark, and P-EAGLE training "

@@ -269,6 +269,7 @@ class StratifiedMultipackDistributedBatchSampler(Sampler):
         num_replicas: int,
         rank: int,
         seed: int = 0,
+        max_samples_per_step: int | None = None,
     ):
         self.batch_max_length = batch_max_length
         self.lengths = np.asarray(lengths)
@@ -278,6 +279,7 @@ class StratifiedMultipackDistributedBatchSampler(Sampler):
         self.num_replicas = num_replicas
         self.rank = rank
         self.seed = seed
+        self.max_samples_per_step = max_samples_per_step
         self.epoch = 0
         self._cached_generated_batches = (-1, [])
 
@@ -285,6 +287,8 @@ class StratifiedMultipackDistributedBatchSampler(Sampler):
             raise ValueError("lengths and categories must have identical shapes")
         if steps_per_epoch <= 0:
             raise ValueError("steps_per_epoch must be positive")
+        if max_samples_per_step is not None and max_samples_per_step <= 0:
+            raise ValueError("max_samples_per_step must be positive")
         if self.category_fractions.ndim != 1 or not np.isclose(
             self.category_fractions.sum(), 1.0
         ):
@@ -335,6 +339,10 @@ class StratifiedMultipackDistributedBatchSampler(Sampler):
             )
             sampler.set_epoch(epoch)
             category_batches = [source_indices[batch] for batch in sampler]
+            if self.max_samples_per_step is not None:
+                category_batches = [
+                    batch[: self.max_samples_per_step] for batch in category_batches
+                ]
             if len(category_batches) < needed:
                 raise ValueError(
                     f"Category {category} provides {len(category_batches)} packed "

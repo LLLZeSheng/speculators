@@ -291,6 +291,9 @@ def _build_train_loader(
         ),
         long_context_step_fractions=tuple(train_args.long_context_step_fractions),
         long_context_steps_per_epoch=train_args.long_context_steps_per_epoch,
+        long_context_max_samples_per_step=(
+            train_args.long_context_max_samples_per_step
+        ),
     )
     return train_loader, False
 

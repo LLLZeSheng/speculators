@@ -655,6 +655,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         long_context_excluded_token_ids=tuple(args.long_context_excluded_token_ids),
         long_context_step_fractions=tuple(args.long_context_step_fractions),
         long_context_steps_per_epoch=args.long_context_steps_per_epoch,
+        long_context_max_samples_per_step=args.long_context_max_samples_per_step,
     )
 
     # Get trainer kwargs from model class
