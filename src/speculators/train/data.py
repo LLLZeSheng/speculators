@@ -21,6 +21,14 @@ from speculators.data_generation.vllm_client import (
     ClientItem,
     generate_hidden_states,
 )
+from speculators.train.long_context import (
+    DISTANCE_STRETCH,
+    SYNTHETIC_PREFIX,
+    LongContextIndex,
+    build_anchor_candidate_mask,
+    concatenate_samples,
+    stretched_position_ids,
+)
 from speculators.train.noise_transforms import TransformTensors
 
 BatchType = dict[str, Any]
@@ -222,8 +230,13 @@ class ArrowDataset(BaseDataset):
         request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         validate_cached_hidden_states_finite: bool = True,
+        long_context_index_path: str | None = None,
+        long_context_block_size: int = 8,
+        long_context_near_window: int = 8192,
+        long_context_excluded_token_ids: tuple[int, ...] = (),
     ):
         self.data = load_from_disk(datapath)
+        full_dataset_rows = len(self.data)
         if not 0.0 < train_ratio <= 1.0:
             raise ValueError(f"train_ratio must be in (0.0, 1.0], got {train_ratio}")
         if split == "val" and train_ratio == 1.0:
@@ -265,6 +278,14 @@ class ArrowDataset(BaseDataset):
         self.validate_cached_hidden_states_finite = (
             validate_cached_hidden_states_finite
         )
+        self.long_context_index = (
+            LongContextIndex(long_context_index_path, full_dataset_rows)
+            if long_context_index_path
+            else None
+        )
+        self.long_context_block_size = long_context_block_size
+        self.long_context_near_window = long_context_near_window
+        self.long_context_excluded_token_ids = long_context_excluded_token_ids
 
         # Delay super init so that `_compute_approx_lengths` has required data
         super().__init__(max_len, transform, hidden_states_dtype)
@@ -294,7 +315,99 @@ class ArrowDataset(BaseDataset):
 
     def _compute_approx_lengths(self) -> list[int]:
         """Get lengths of the dataset samples."""
-        return list(self.data.with_format(None)["seq_len"])
+        lengths = list(self.data.with_format(None)["seq_len"])
+        if self.long_context_index is None:
+            return lengths
+        result = []
+        for local_index, seq_len in enumerate(lengths):
+            record = self.long_context_index[self.start_file_idx + local_index]
+            result.append(
+                min(self.max_len, int(seq_len) + record.prefix_len)
+                if record.kind == SYNTHETIC_PREFIX
+                else int(seq_len)
+            )
+        return result
+
+    def __getitem__(self, index) -> BatchType | None:
+        if self.long_context_index is None:
+            return super().__getitem__(index)
+
+        record = self.long_context_index[self.start_file_idx + index]
+        target = self._get_raw_data(index)
+        if target is None:
+            return None
+        target_len = target["input_ids"].shape[0]
+        response_start = min(record.response_start, target_len)
+        response_end = min(record.response_end, target_len)
+
+        if record.kind == SYNTHETIC_PREFIX:
+            synthetic = self._build_synthetic_prefix(target, target_len, record)
+            if synthetic is None:
+                return None
+            data, target_offset = synthetic
+            allowed_start = target_offset + response_start
+            allowed_end = target_offset + response_end
+            position_ids = torch.arange(data["input_ids"].shape[0], dtype=torch.long)
+        else:
+            data = target
+            if record.kind == DISTANCE_STRETCH:
+                if response_start < 0 or response_end <= response_start:
+                    raise ValueError(
+                        f"Invalid response boundary for stretched row {index}: "
+                        f"[{response_start}, {response_end})"
+                    )
+                allowed_start = response_start
+                allowed_end = response_end
+                position_ids = stretched_position_ids(
+                    target_len,
+                    response_start,
+                    record.target_anchor_position,
+                    self.long_context_near_window,
+                )
+            else:
+                # Preserve the original-data distribution. The rolling safety
+                # check below still prevents crossing response/EOS boundaries.
+                allowed_start = 0
+                allowed_end = target_len
+                position_ids = torch.arange(target_len, dtype=torch.long)
+
+        data["lengths"] = torch.tensor([data["input_ids"].shape[0]], dtype=torch.long)
+        data["position_ids"] = position_ids
+        data["anchor_candidate_mask"] = build_anchor_candidate_mask(
+            data["input_ids"],
+            data["loss_mask"],
+            self.long_context_block_size,
+            self.long_context_excluded_token_ids,
+            allowed_start,
+            allowed_end,
+        )
+        if self.transform:
+            data = self.transform(data)
+        return data
+
+    def _build_synthetic_prefix(self, target, target_len, record):
+        donor_parts = []
+        for donor_index in (record.donor1, record.donor2):
+            donor = self._get_raw_data(donor_index - self.start_file_idx)
+            if donor is None:
+                return None
+            donor_parts.append(donor)
+        available = sum(part["input_ids"].shape[0] for part in donor_parts)
+        prefix_len = min(record.prefix_len, available, self.max_len - target_len)
+        # Keep the tail nearest B intact, then use the earlier donor for the
+        # remaining prefix. Both donors are context-only and never supervised.
+        take2 = min(prefix_len, donor_parts[1]["input_ids"].shape[0])
+        take1 = prefix_len - take2
+        prefix_parts = []
+        for part, take in zip(donor_parts, (take1, take2), strict=True):
+            if take:
+                selected = {key: value[-take:] for key, value in part.items()}
+                selected["loss_mask"] = torch.zeros_like(
+                    selected["loss_mask"], dtype=torch.bool
+                )
+                prefix_parts.append(selected)
+        target["loss_mask"] = target["loss_mask"].bool()
+        return concatenate_samples([*prefix_parts, target]), prefix_len
 
     def _maybe_generate_hs(self, index: int) -> dict[str, torch.Tensor] | None:
         if not self.client:

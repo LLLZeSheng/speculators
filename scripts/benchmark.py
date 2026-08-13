@@ -283,6 +283,12 @@ def _build_train_loader(
         prefetch_factor=train_args.prefetch_factor,
         preprocess=preprocess,
         train_data_ratio=train_args.train_data_ratio,
+        long_context_index_path=train_args.long_context_index_path,
+        long_context_block_size=train_args.block_size,
+        long_context_near_window=train_args.long_context_near_window,
+        long_context_excluded_token_ids=tuple(
+            train_args.long_context_excluded_token_ids
+        ),
     )
     return train_loader, False
 

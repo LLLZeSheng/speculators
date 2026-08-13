@@ -241,6 +241,21 @@ class DataArgs(_Group):
         "DataLoader. Disable only when the dataset was filtered separately and the "
         "trainer's synchronized non-finite loss/gradient guards are enabled.",
     )
+    long_context_index_path: str | None = Field(
+        default=None,
+        description=(
+            "Optional NPZ index for on-the-fly synthetic-prefix and distance-stretch "
+            "training augmentation. Applied to the training split only."
+        ),
+    )
+    long_context_near_window: int = Field(
+        default=8192,
+        description="Local tail whose relative positions remain unchanged by stretching.",
+    )
+    long_context_excluded_token_ids: list[int] = Field(
+        default_factory=list,
+        description="EOS/padding token IDs that cannot occur inside an anchor block.",
+    )
     max_anchors: int = Field(
         default=3072,
         description="Maximum anchor positions for DFlash, DSpark, and P-EAGLE training "

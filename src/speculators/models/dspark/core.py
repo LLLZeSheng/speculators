@@ -224,6 +224,20 @@ class DSparkDraftModel(DFlashDraftModel):
             if position_ids is None
             else position_ids[0, anchor_positions]
         )
+        token_positions = torch.arange(
+            document_ids.shape[1], device=document_ids.device, dtype=torch.long
+        )
+        document_starts = torch.where(
+            torch.cat(
+                [
+                    torch.ones(1, device=document_ids.device, dtype=torch.bool),
+                    document_ids[0, 1:] != document_ids[0, :-1],
+                ]
+            ),
+            token_positions,
+            torch.zeros_like(token_positions),
+        ).cummax(dim=0).values
+        anchor_visible_kv = anchor_positions - document_starts[anchor_positions] + 1
 
         loss, metrics = compute_metrics(
             logits,
@@ -238,5 +252,6 @@ class DSparkDraftModel(DFlashDraftModel):
             dpace_alpha=dpace_alpha,
             sample_from_anchor=self.config.sample_from_anchor,
             anchor_context_positions=anchor_context_positions,
+            anchor_visible_kv=anchor_visible_kv,
         )
         return None, loss, metrics

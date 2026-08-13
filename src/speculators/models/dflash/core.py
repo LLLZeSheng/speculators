@@ -314,6 +314,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         position_ids,
         device,
         *,
+        anchor_candidate_mask=None,
         anchor_sampling="uniform",
         anchor_tail_fraction=0.5,
         anchor_position_boundaries=(8192, 16384, 24576),
@@ -330,6 +331,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
             tail_fraction=anchor_tail_fraction,
             position_boundaries=anchor_position_boundaries,
             position_weights=anchor_position_weights,
+            anchor_candidate_mask=anchor_candidate_mask,
         )
 
         full_attn_mask = None
@@ -382,6 +384,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
         anchor_position_weights = kwargs.pop(
             "anchor_position_weights", (1.0, 2.0, 6.0, 12.0)
         )
+        anchor_candidate_mask = kwargs.pop("anchor_candidate_mask", None)
 
         if position_ids is None:
             position_ids = torch.arange(
@@ -395,6 +398,7 @@ class DFlashDraftModel(DraftVocabMixin, SpeculatorModel):
                 document_ids,
                 position_ids,
                 device,
+                anchor_candidate_mask=anchor_candidate_mask,
                 anchor_sampling=anchor_sampling,
                 anchor_tail_fraction=anchor_tail_fraction,
                 anchor_position_boundaries=anchor_position_boundaries,

@@ -31,7 +31,33 @@ _CONTEXT_BUCKETS = (
     (8192, 16384, "8_16k"),
     (16384, 24576, "16_24k"),
     (24576, 32768, "24_32k"),
+    (32768, 40960, "32_40k"),
+    (40960, 49152, "40_48k"),
+    (49152, 57344, "48_56k"),
+    (57344, 65537, "56_64k"),
 )
+
+
+def _add_context_bucket_metrics(
+    metrics: dict,
+    values: torch.Tensor,
+    per_block_len: torch.Tensor,
+    block_valid: torch.Tensor,
+    prefix: str,
+) -> None:
+    valid_anchor_total = block_valid.sum()
+    for lower, upper, label in _CONTEXT_BUCKETS:
+        bucket_valid = ((values >= lower) & (values < upper)).to(
+            per_block_len.dtype
+        ) * block_valid
+        metrics[f"accept_len_{prefix}_{label}_sum"] = (
+            per_block_len * bucket_valid
+        ).sum()
+        metrics[f"accept_len_{prefix}_{label}_total"] = bucket_valid.sum()
+        metrics[f"anchor_fraction_{prefix}_{label}_sum"] = bucket_valid.sum()
+        metrics[f"anchor_fraction_{prefix}_{label}_total"] = (
+            valid_anchor_total.clone()
+        )
 
 
 def _masked_decayed_mean(
@@ -64,6 +90,7 @@ def compute_metrics(
     dpace_alpha: float = 0.5,
     sample_from_anchor: bool = True,
     anchor_context_positions: torch.Tensor | None = None,
+    anchor_visible_kv: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """Compute the DSpark loss and a metrics dict (``*_sum``/``*_total`` pairs)."""
 
@@ -160,23 +187,16 @@ def compute_metrics(
                     "anchor_context_positions must have one value per block; got "
                     f"{tuple(anchor_context_positions.shape)} for {num_blocks} blocks"
                 )
-            valid_anchor_total = block_valid.sum()
-            for lower, upper, label in _CONTEXT_BUCKETS:
-                in_bucket = (
-                    (anchor_context_positions >= lower)
-                    & (anchor_context_positions < upper)
-                ).to(accept_rate.dtype)
-                bucket_valid = in_bucket * block_valid
-                metrics[f"accept_len_ctx_{label}_sum"] = (
-                    per_block_len * bucket_valid
-                ).sum()
-                metrics[f"accept_len_ctx_{label}_total"] = bucket_valid.sum()
-                metrics[f"anchor_fraction_ctx_{label}_sum"] = bucket_valid.sum()
-                # dist.reduce is in-place. Each metric key must own its tensor;
-                # reusing one denominator object would reduce it four times.
-                metrics[f"anchor_fraction_ctx_{label}_total"] = (
-                    valid_anchor_total.clone()
-                )
+            _add_context_bucket_metrics(
+                metrics, anchor_context_positions, per_block_len, block_valid, "ctx"
+            )
+
+        if anchor_visible_kv is not None:
+            if anchor_visible_kv.shape != (num_blocks,):
+                raise ValueError("anchor_visible_kv must have one value per block")
+            _add_context_bucket_metrics(
+                metrics, anchor_visible_kv, per_block_len, block_valid, "visible_kv"
+            )
 
     # Per-position greedy accuracy
     pred_ids = torch.argmax(logits, dim=-1)

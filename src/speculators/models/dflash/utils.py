@@ -61,6 +61,7 @@ def select_anchors(
     tail_fraction: float = 0.5,
     position_boundaries: Sequence[int] = (8192, 16384, 24576),
     position_weights: Sequence[float] = (1.0, 2.0, 6.0, 12.0),
+    anchor_candidate_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Select anchor positions from valid tokens in a packed sequence.
 
@@ -85,7 +86,15 @@ def select_anchors(
     if block_size <= 0:
         raise ValueError(f"Expected block size > 0, got {block_size}")
 
-    valid_mask = loss_mask.bool().clone()
+    if anchor_candidate_mask is not None:
+        if anchor_candidate_mask.shape != loss_mask.shape:
+            raise ValueError(
+                "anchor_candidate_mask must have the same shape as loss_mask; "
+                f"got {tuple(anchor_candidate_mask.shape)} and {tuple(loss_mask.shape)}"
+            )
+        valid_mask = anchor_candidate_mask.bool().clone()
+    else:
+        valid_mask = loss_mask.bool().clone()
     valid_mask[:, -block_size:] = False
 
     valid_indices = torch.nonzero(valid_mask.squeeze(0), as_tuple=False).squeeze(

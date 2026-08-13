@@ -50,6 +50,18 @@ class TestGetBaseIndicesForAnchoredBlocks:
 
 
 class TestSelectAnchors:
+    def test_explicit_candidate_mask_overrides_individual_loss_tokens(self):
+        loss_mask = torch.ones(1, 16)
+        candidate_mask = torch.zeros(1, 16, dtype=torch.bool)
+        candidate_mask[:, [3, 9]] = True
+        anchors, anchor_valid = select_anchors(
+            loss_mask,
+            num_anchors=8,
+            block_size=2,
+            anchor_candidate_mask=candidate_mask,
+        )
+        assert set(anchors[anchor_valid].tolist()) == {3, 9}
+
     def test_sampled_anchors_are_sorted(self):
         # Anchors are returned sorted by position so the draft blocks form
         # contiguous flex-attention blocks (fast path) instead of scattered ones.

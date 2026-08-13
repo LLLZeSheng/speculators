@@ -649,6 +649,10 @@ def main(cfg: TrainConfig):  # noqa: C901
         validate_cached_hidden_states_finite=(
             args.validate_cached_hidden_states_finite
         ),
+        long_context_index_path=args.long_context_index_path,
+        long_context_block_size=args.block_size,
+        long_context_near_window=args.long_context_near_window,
+        long_context_excluded_token_ids=tuple(args.long_context_excluded_token_ids),
     )
 
     # Get trainer kwargs from model class
