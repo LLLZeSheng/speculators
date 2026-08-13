@@ -248,3 +248,108 @@ class MultipackDistributedBatchSamplerV2(Sampler):
         # Cache result
         self._cached_generated_batches = (epoch, batches)
         return batches
+
+
+class StratifiedMultipackDistributedBatchSampler(Sampler):
+    """Multipack batches with an exact, deterministic per-step category mix.
+
+    Row-level sampling fractions are misleading when one category contains 60K
+    samples and another contains 8K samples. This sampler first builds independent
+    packed-batch pools, then interleaves whole optimizer steps according to the
+    requested fractions. All distributed ranks use the same category schedule.
+    """
+
+    def __init__(
+        self,
+        batch_max_length: int,
+        lengths: ArrayLike,
+        categories: ArrayLike,
+        category_fractions: ArrayLike,
+        steps_per_epoch: int,
+        num_replicas: int,
+        rank: int,
+        seed: int = 0,
+    ):
+        self.batch_max_length = batch_max_length
+        self.lengths = np.asarray(lengths)
+        self.categories = np.asarray(categories)
+        self.category_fractions = np.asarray(category_fractions, dtype=np.float64)
+        self.steps_per_epoch = steps_per_epoch
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.seed = seed
+        self.epoch = 0
+        self._cached_generated_batches = (-1, [])
+
+        if self.lengths.shape != self.categories.shape:
+            raise ValueError("lengths and categories must have identical shapes")
+        if steps_per_epoch <= 0:
+            raise ValueError("steps_per_epoch must be positive")
+        if self.category_fractions.ndim != 1 or not np.isclose(
+            self.category_fractions.sum(), 1.0
+        ):
+            raise ValueError("category_fractions must be 1-D and sum to 1")
+        if np.any(self.category_fractions < 0):
+            raise ValueError("category_fractions cannot be negative")
+        expected = np.arange(len(self.category_fractions))
+        if np.any(self.category_fractions > 0) and not np.all(
+            np.isin(expected[self.category_fractions > 0], np.unique(self.categories))
+        ):
+            raise ValueError("Every positive-fraction category needs dataset rows")
+
+    def __iter__(self):
+        return iter(self._generate_batches(self.epoch))
+
+    def __len__(self):
+        return self.steps_per_epoch
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+    def _category_step_counts(self) -> np.ndarray:
+        exact = self.category_fractions * self.steps_per_epoch
+        counts = np.floor(exact).astype(np.int64)
+        remainder = self.steps_per_epoch - int(counts.sum())
+        if remainder:
+            order = np.argsort(-(exact - counts), kind="stable")
+            counts[order[:remainder]] += 1
+        return counts
+
+    def _generate_batches(self, epoch: int) -> list[NDArray]:
+        if self._cached_generated_batches[0] == epoch:
+            return self._cached_generated_batches[1]
+
+        counts = self._category_step_counts()
+        pools: dict[int, list[NDArray]] = {}
+        for category, needed in enumerate(counts):
+            if needed == 0:
+                pools[category] = []
+                continue
+            source_indices = np.flatnonzero(self.categories == category)
+            sampler = MultipackDistributedBatchSamplerV2(
+                batch_max_length=self.batch_max_length,
+                lengths=self.lengths[source_indices],
+                num_replicas=self.num_replicas,
+                rank=self.rank,
+                seed=self.seed + category * 100_003,
+            )
+            sampler.set_epoch(epoch)
+            category_batches = [source_indices[batch] for batch in sampler]
+            if len(category_batches) < needed:
+                raise ValueError(
+                    f"Category {category} provides {len(category_batches)} packed "
+                    f"steps, fewer than the requested {needed}"
+                )
+            pools[category] = category_batches[:needed]
+
+        schedule = np.repeat(np.arange(len(counts)), counts)
+        rng = np.random.default_rng(self.seed + epoch)
+        rng.shuffle(schedule)
+        offsets = np.zeros(len(counts), dtype=np.int64)
+        batches = []
+        for category in schedule:
+            batches.append(pools[int(category)][offsets[category]])
+            offsets[category] += 1
+
+        self._cached_generated_batches = (epoch, batches)
+        return batches

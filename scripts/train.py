@@ -653,6 +653,8 @@ def main(cfg: TrainConfig):  # noqa: C901
         long_context_block_size=args.block_size,
         long_context_near_window=args.long_context_near_window,
         long_context_excluded_token_ids=tuple(args.long_context_excluded_token_ids),
+        long_context_step_fractions=tuple(args.long_context_step_fractions),
+        long_context_steps_per_epoch=args.long_context_steps_per_epoch,
     )
 
     # Get trainer kwargs from model class
@@ -683,6 +685,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         log_freq=args.log_freq,
         fsdp_shard=args.fsdp_shard,
         max_steps=args.max_steps,
+        max_validation_steps=args.max_validation_steps,
     )
     trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)
 

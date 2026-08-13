@@ -130,6 +130,7 @@ class TrainerConfig(NamedTuple):
     log_freq: int = 1
     fsdp_shard: bool = False
     max_steps: int | None = None
+    max_validation_steps: int | None = None
 
 
 def _resolve_scheduler_steps(
@@ -583,8 +584,13 @@ class Trainer:
             val_loader = tqdm(val_loader, desc=f"Epoch {epoch}")  # type: ignore[assignment]
 
         accumulated: dict[str, torch.Tensor] = {}
-        num_batches = len(val_loader)
+        num_batches = 0
         for i, batch in enumerate(val_loader):
+            if (
+                self.config.max_validation_steps is not None
+                and i >= self.config.max_validation_steps
+            ):
+                break
             self._maybe_val_sync(i)
             gpu_batch = {
                 k: v.to(self.local_rank, non_blocking=True)
@@ -603,6 +609,7 @@ class Trainer:
             for k, v in metrics.items():
                 acc = accumulated.get(k)
                 accumulated[k] = v.float() if acc is None else acc + v.float()
+            num_batches += 1
 
         val_metrics: dict[str, float] = {}
         if accumulated:
@@ -694,15 +701,10 @@ class Trainer:
             if self.is_distributed:
                 dist.barrier()
 
-            if (
+            reached_max_steps = (
                 self.config.max_steps is not None
                 and self.global_step >= self.config.max_steps
-            ):
-                root_logger.info(
-                    "Reached max_steps=%d; ending the run before validation",
-                    self.config.max_steps,
-                )
-                break
+            )
 
             val_metrics = None
 
@@ -720,3 +722,10 @@ class Trainer:
 
             if self.is_distributed:
                 dist.barrier()
+
+            if reached_max_steps:
+                root_logger.info(
+                    "Reached max_steps=%d after deterministic validation; ending run",
+                    self.config.max_steps,
+                )
+                break

@@ -21,6 +21,7 @@ from speculators.train.data import (
 from speculators.train.distributed import get_dp_rank, get_dp_size
 from speculators.train.distributed_batch_sampler import (
     MultipackDistributedBatchSamplerV2,
+    StratifiedMultipackDistributedBatchSampler,
 )
 from speculators.train.noise_transforms import AddUniformNoise
 
@@ -37,13 +38,32 @@ def _setup_dataloader(
     num_target_layers: int = 3,
     prefetch_factor: int | None = 4,
     preprocess: Callable[[BatchType], BatchType] | None = None,
+    categories: list[int] | None = None,
+    category_fractions: tuple[float, ...] = (),
+    stratified_steps_per_epoch: int | None = None,
 ) -> DataLoader:
-    batch_sampler = MultipackDistributedBatchSamplerV2(
-        batch_max_length=total_seq_len,
-        lengths=dataset.approx_lengths,
-        num_replicas=get_dp_size(),
-        rank=get_dp_rank(),
-    )
+    if categories is not None:
+        if not category_fractions or stratified_steps_per_epoch is None:
+            raise ValueError(
+                "category_fractions and stratified_steps_per_epoch are required "
+                "when stratified categories are supplied"
+            )
+        batch_sampler = StratifiedMultipackDistributedBatchSampler(
+            batch_max_length=total_seq_len,
+            lengths=dataset.approx_lengths,
+            categories=categories,
+            category_fractions=category_fractions,
+            steps_per_epoch=stratified_steps_per_epoch,
+            num_replicas=get_dp_size(),
+            rank=get_dp_rank(),
+        )
+    else:
+        batch_sampler = MultipackDistributedBatchSamplerV2(
+            batch_max_length=total_seq_len,
+            lengths=dataset.approx_lengths,
+            num_replicas=get_dp_size(),
+            rank=get_dp_rank(),
+        )
     use_workers = num_workers > 0
     return DataLoader(
         dataset,
@@ -87,6 +107,8 @@ def create_train_val_loaders(
     long_context_block_size: int = 8,
     long_context_near_window: int = 8192,
     long_context_excluded_token_ids: tuple[int, ...] = (),
+    long_context_step_fractions: tuple[float, ...] = (),
+    long_context_steps_per_epoch: int | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     """Create training and validation DataLoaders.
 
@@ -163,6 +185,20 @@ def create_train_val_loaders(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         preprocess=preprocess,
+        categories=(
+            list(
+                train_dataset.long_context_index.arrays["kind"][
+                    train_dataset.start_file_idx : train_dataset.start_file_idx
+                    + len(train_dataset)
+                ]
+            )
+            if isinstance(train_dataset, ArrowDataset)
+            and train_dataset.long_context_index is not None
+            and long_context_step_fractions
+            else None
+        ),
+        category_fractions=long_context_step_fractions,
+        stratified_steps_per_epoch=long_context_steps_per_epoch,
     )
     val_loader = _setup_dataloader(
         val_dataset,

@@ -250,11 +250,25 @@ class DataArgs(_Group):
     )
     long_context_near_window: int = Field(
         default=8192,
-        description="Local tail whose relative positions remain unchanged by stretching.",
+        description=(
+            "Local tail whose relative positions remain unchanged by stretching."
+        ),
     )
     long_context_excluded_token_ids: list[int] = Field(
         default_factory=list,
         description="EOS/padding token IDs that cannot occur inside an anchor block.",
+    )
+    long_context_step_fractions: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Optional exact optimizer-step fractions for real, synthetic-prefix, "
+            "and distance-stretch categories, e.g. 0.7 0.2 0.1."
+        ),
+    )
+    long_context_steps_per_epoch: int | None = Field(
+        default=None,
+        ge=1,
+        description="Number of stratified optimizer steps generated per epoch.",
     )
     max_anchors: int = Field(
         default=3072,
@@ -427,6 +441,14 @@ class TrainerArgs(_Group):
         ge=1,
         description="Stop training after this many optimizer steps (counted across "
         "epochs). Useful for quick smoke runs. Default: run all epochs to completion.",
+    )
+    max_validation_steps: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional cap on validation batches. Validation remains deterministic "
+            "and is still run when max_steps ends a short experiment."
+        ),
     )
 
     @field_validator("checkpoint_freq")

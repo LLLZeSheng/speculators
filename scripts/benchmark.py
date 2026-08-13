@@ -289,6 +289,8 @@ def _build_train_loader(
         long_context_excluded_token_ids=tuple(
             train_args.long_context_excluded_token_ids
         ),
+        long_context_step_fractions=tuple(train_args.long_context_step_fractions),
+        long_context_steps_per_epoch=train_args.long_context_steps_per_epoch,
     )
     return train_loader, False
 
