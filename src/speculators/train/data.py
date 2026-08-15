@@ -438,7 +438,13 @@ class ArrowDataset(BaseDataset):
             "verifier_last_hidden_states": loaded_hs["hidden_states"][
                 :, -1
             ],  # [seq_len, hidden_size]
-            "loss_mask": dataset_item["loss_mask"][: len(expected_tokens)],
+            # Compact Hugging Face datasets commonly deserialize this column as
+            # a Python list. Normalize it here so packing and MTP offset slicing
+            # never depend on Arrow's output-format state.
+            "loss_mask": torch.as_tensor(
+                dataset_item["loss_mask"][: len(expected_tokens)],
+                dtype=torch.bool,
+            ),
         }
 
 

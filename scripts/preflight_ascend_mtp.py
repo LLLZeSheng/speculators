@@ -41,9 +41,11 @@ _TOKENIZER_FILES = (
 )
 _HTTP_OK = 200
 _EXPECTED_VERSIONS = {
-    "torch-npu": "2.10.0.post2",
-    "vllm": "0.23.1rc1.dev1451+gd02df748b.d20260811",
-    "vllm-ascend": "0.23.0rc1",
+    "torch-npu": os.environ.get("EXPECTED_TORCH_NPU_VERSION", "2.10.0.post2"),
+    "vllm": os.environ.get("EXPECTED_VLLM_VERSION", "0.23.0"),
+    "vllm-ascend": os.environ.get(
+        "EXPECTED_VLLM_ASCEND_VERSION", "0.23.0rc1"
+    ),
 }
 _GLM_MTP_NON_EXPERT_SUFFIXES = (
     "eh_proj.weight",

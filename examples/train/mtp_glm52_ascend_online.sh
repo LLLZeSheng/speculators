@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Four-node GLM-5.2 online MTP3 training on Ascend 910B3.
+# Eight-node GLM-5.2 online MTP3 training on Ascend 910C / Atlas A3.
+# Topology: four 16-NPU verifier nodes plus four 16-NPU trainer nodes.
 # Run one role per node. See docs/user_guide/tutorials/train_mtp_ascend_online.md.
 
 set -euo pipefail
@@ -12,28 +13,39 @@ DRY_RUN=${DRY_RUN:-0}
 PYTHON_BIN=${PYTHON_BIN:-python}
 TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 
-VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1}
-MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-/mnt/xds/sfs/GLM-5.2}
-DATA_PATH=${DATA_PATH:-/mnt/xds/sfs/datasets/glm52-dspark-train}
-HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-/mnt/xds/sfs/spec_train/online_hidden_states/glm52-w4a8}
-MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-/mnt/xds/sfs/spec_train/initial/glm52-bf16-mtp3}
-OUTPUT_PATH=${OUTPUT_PATH:-/mnt/xds/sfs/spec_train/checkpoints/glm52-w4a8-mtp3}
-LOG_ROOT=${LOG_ROOT:-/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3}
+SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
+VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/dev/s00838505/GLM-5.2-w4a8c8}
+# The W4A8C8 verifier is inference-only. This path must point to an unquantized
+# GLM-5.2 checkpoint containing the native MTP layer.
+MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-${SHARED_ROOT}/models/GLM-5.2}
+DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/datasets/glm52-dspark-train}
+HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-${SHARED_ROOT}/spec_train/online_hidden_states/glm52-w4a8c8}
+MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-bf16-mtp3}
+OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp3}
+LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp3}
+VERIFIER_METADATA_PATH=${VERIFIER_METADATA_PATH:-${SHARED_ROOT}/spec_train/metadata/glm52-w4a8c8}
 
-SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-glm52-w4a8-verifier}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-glm52-w4a8c8-verifier}
 VERIFIER_HOST=${VERIFIER_HOST:-}
+VERIFIER_ID=${VERIFIER_ID:-0}
 VERIFIER_BIND_HOST=${VERIFIER_BIND_HOST:-0.0.0.0}
-VERIFIER_PORT=${VERIFIER_PORT:-8000}
-VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-16}
+VERIFIER_PORT=${VERIFIER_PORT:-8077}
+VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-8}
+VERIFIER_DP_SIZE=${VERIFIER_DP_SIZE:-2}
 VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-8193}
+VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-12}
+VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-8192}
+VERIFIER_GPU_MEMORY_UTILIZATION=${VERIFIER_GPU_MEMORY_UTILIZATION:-0.92}
 TARGET_LAYER_ID=${TARGET_LAYER_ID:-78}
 
-NNODES=${NNODES:-3}
+NNODES=${NNODES:-4}
 NPROC_PER_NODE=${NPROC_PER_NODE:-16}
 NODE_RANK=${NODE_RANK:-}
 MASTER_ADDR=${MASTER_ADDR:-}
 MASTER_PORT=${MASTER_PORT:-29500}
-RUN_ID=${RUN_ID:-glm52-w4a8-mtp3}
+LOCAL_IP=${LOCAL_IP:-}
+NIC_NAME=${NIC_NAME:-}
+RUN_ID=${RUN_ID:-glm52-w4a8c8-mtp3}
 
 TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-4096}
 EPOCHS=${EPOCHS:-5}
@@ -45,19 +57,26 @@ TRAIN_DATA_RATIO=${TRAIN_DATA_RATIO:-0.98}
 NUM_WORKERS=${NUM_WORKERS:-1}
 PREFETCH_FACTOR=${PREFETCH_FACTOR:-2}
 MAX_STEPS=${MAX_STEPS:-}
-RUN_NAME=${RUN_NAME:-glm52-w4a8-ascend-mtp3}
+RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
 
 SMOKE_SAMPLES=${SMOKE_SAMPLES:-64}
 SMOKE_RUN_ID=${SMOKE_RUN_ID:-}
-SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-/mnt/xds/sfs/spec_train/smoke/glm52-mtp3-tokens-64-${SMOKE_RUN_ID:-unset}}
+SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-${SHARED_ROOT}/spec_train/smoke/glm52-mtp3-tokens-64-${SMOKE_RUN_ID:-unset}}
 MTP_PREPARE_TIMEOUT=${MTP_PREPARE_TIMEOUT:-3600}
 
 ASCEND_DEVICES=${ASCEND_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-$ASCEND_DEVICES}
-export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-1800}
-export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-7200}
+export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}
+export HCCL_TRANSFER_TIMEOUT=${HCCL_TRANSFER_TIMEOUT:-600}
+export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-3600}
+export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-3600}
+export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-200}
+export OMP_PROC_BIND=${OMP_PROC_BIND:-false}
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}
 export VLLM_USE_V1=${VLLM_USE_V1:-1}
+export VLLM_ASCEND_ENABLE_FLASHCOMM1=${VLLM_ASCEND_ENABLE_FLASHCOMM1:-1}
+export VLLM_ASCEND_ENABLE_FUSED_MC2=${VLLM_ASCEND_ENABLE_FUSED_MC2:-0}
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 fail() {
@@ -117,6 +136,12 @@ validate_role() {
     esac
 }
 
+validate_verifier_id() {
+    [[ $VERIFIER_ID =~ ^[0-9]+$ ]] || fail "VERIFIER_ID must be an integer"
+    ((VERIFIER_ID >= 0 && VERIFIER_ID < 4)) || \
+        fail "VERIFIER_ID must be in [0, 3]"
+}
+
 validate_trainer_topology() {
     require_value VERIFIER_HOST
     require_value MASTER_ADDR
@@ -124,6 +149,14 @@ validate_trainer_topology() {
     [[ $NODE_RANK =~ ^[0-9]+$ ]] || fail "NODE_RANK must be an integer"
     ((NODE_RANK >= 0 && NODE_RANK < NNODES)) || \
         fail "NODE_RANK must be in [0, $((NNODES - 1))]"
+    if [[ -n $LOCAL_IP || -n $NIC_NAME ]]; then
+        require_value LOCAL_IP
+        require_value NIC_NAME
+        export HCCL_IF_IP=$LOCAL_IP
+        export GLOO_SOCKET_IFNAME=$NIC_NAME
+        export TP_SOCKET_IFNAME=$NIC_NAME
+        export HCCL_SOCKET_IFNAME=$NIC_NAME
+    fi
 }
 
 validate_context_window() {
@@ -145,22 +178,28 @@ Resolved Ascend MTP3 configuration:
   MTP_DRAFT_PATH=$MTP_DRAFT_PATH
   OUTPUT_PATH=$OUTPUT_PATH
   LOG_ROOT=$LOG_ROOT
-  VERIFIER_HOST=${VERIFIER_HOST:-<unset>} VERIFIER_PORT=$VERIFIER_PORT
+  VERIFIER_METADATA_PATH=$VERIFIER_METADATA_PATH
+  VERIFIER_ID=$VERIFIER_ID VERIFIER_HOST=${VERIFIER_HOST:-<unset>} VERIFIER_PORT=$VERIFIER_PORT
   MASTER_ADDR=${MASTER_ADDR:-<unset>} MASTER_PORT=$MASTER_PORT
   NNODES=$NNODES NPROC_PER_NODE=$NPROC_PER_NODE NODE_RANK=${NODE_RANK:-<unset>}
+  LOCAL_IP=${LOCAL_IP:-<auto>} NIC_NAME=${NIC_NAME:-<auto>}
+  VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
 EOF
 }
 
 preflight_args() {
     local required_devices=$NPROC_PER_NODE
+    local verifier_preflight_path=$VERIFIER_MODEL_PATH
     if [[ $ROLE == verifier ]]; then
-        required_devices=$VERIFIER_TP_SIZE
+        required_devices=$((VERIFIER_TP_SIZE * VERIFIER_DP_SIZE))
+    elif [[ $ROLE == trainer || $ROLE == smoke ]]; then
+        verifier_preflight_path=$VERIFIER_METADATA_PATH
     fi
     PREFLIGHT_CMD=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/preflight_ascend_mtp.py"
         --bf16-model "$MTP_INIT_MODEL_PATH"
-        --verifier-model "$VERIFIER_MODEL_PATH"
+        --verifier-model "$verifier_preflight_path"
         --data-path "$DATA_PATH"
         --hidden-states-path "$HIDDEN_STATES_PATH"
         --required-devices "$required_devices"
@@ -170,14 +209,61 @@ preflight_args() {
     fi
 }
 
+publish_verifier_metadata() {
+    local marker="$VERIFIER_METADATA_PATH/.ready"
+    if [[ $DRY_RUN == 1 ]]; then
+        printf '[metadata] publish verifier config/tokenizer to %s\n' \
+            "$VERIFIER_METADATA_PATH"
+        return
+    fi
+    mkdir -p "$(dirname -- "$VERIFIER_METADATA_PATH")"
+    (
+        flock -x 9
+        if [[ -f $marker ]]; then
+            local existing
+            for existing in "$VERIFIER_METADATA_PATH"/*; do
+                [[ -f $existing ]] || continue
+                [[ ${existing##*/} == .ready ]] && continue
+                [[ -f $VERIFIER_MODEL_PATH/${existing##*/} ]] || \
+                    fail "published verifier metadata is stale: ${existing##*/}"
+                cmp -s -- "$existing" "$VERIFIER_MODEL_PATH/${existing##*/}" || \
+                    fail "published verifier metadata differs: ${existing##*/}"
+            done
+            exit 0
+        fi
+        [[ ! -e $VERIFIER_METADATA_PATH ]] || \
+            fail "$VERIFIER_METADATA_PATH exists without .ready; inspect it manually"
+        local temporary="${VERIFIER_METADATA_PATH}.tmp.${HOSTNAME}.$$"
+        trap 'rm -rf -- "$temporary"' EXIT
+        mkdir -p "$temporary"
+        local filename
+        for filename in config.json tokenizer.json tokenizer.model \
+            tokenizer_config.json special_tokens_map.json added_tokens.json; do
+            if [[ -f $VERIFIER_MODEL_PATH/$filename ]]; then
+                cp -- "$VERIFIER_MODEL_PATH/$filename" "$temporary/$filename"
+            fi
+        done
+        [[ -f $temporary/config.json ]] || \
+            fail "verifier config.json was not copied from $VERIFIER_MODEL_PATH"
+        if [[ ! -f $temporary/tokenizer.json && ! -f $temporary/tokenizer.model ]]; then
+            fail "verifier tokenizer assets were not copied from $VERIFIER_MODEL_PATH"
+        fi
+        touch "$temporary/.ready"
+        mv -- "$temporary" "$VERIFIER_METADATA_PATH"
+        trap - EXIT
+    ) 9>"${VERIFIER_METADATA_PATH}.lock"
+}
+
 run_preflight() {
     preflight_args
     run_cmd "${PREFLIGHT_CMD[@]}" "$@"
 }
 
 run_verifier() {
+    validate_verifier_id
     run_preflight --require-vllm
-    local log_file="$LOG_ROOT/verifier/verifier.log"
+    publish_verifier_metadata
+    local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"
     local cmd=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/launch_vllm.py"
         "$VERIFIER_MODEL_PATH"
@@ -188,8 +274,19 @@ run_verifier() {
         --host "$VERIFIER_BIND_HOST"
         --port "$VERIFIER_PORT"
         --served-model-name "$SERVED_MODEL_NAME"
+        --safetensors-load-strategy prefetch
+        --api-server-count 1
+        --data-parallel-size "$VERIFIER_DP_SIZE"
         --tensor-parallel-size "$VERIFIER_TP_SIZE"
+        --enable-expert-parallel
+        --seed 1024
+        --max-num-seqs "$VERIFIER_MAX_NUM_SEQS"
         --max-model-len "$VERIFIER_MAX_MODEL_LEN"
+        --max-num-batched-tokens "$VERIFIER_MAX_BATCHED_TOKENS"
+        --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
+        --quantization ascend
+        --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"enable_balance_scheduling":true,"multistream_overlap_shared_expert":true}'
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then
@@ -201,6 +298,10 @@ run_verifier() {
 wait_for_marker() {
     local marker=$1
     local description=$2
+    if [[ $DRY_RUN == 1 ]]; then
+        printf '[wait] %s: %s\n' "$description" "$marker"
+        return
+    fi
     local waited=0
     while [[ ! -f $marker ]]; do
         ((waited < MTP_PREPARE_TIMEOUT)) || \
@@ -273,6 +374,7 @@ prepare_smoke_data() {
 run_trainer() {
     local mode=$1
     validate_trainer_topology
+    wait_for_marker "$VERIFIER_METADATA_PATH/.ready" "verifier metadata"
     run_preflight --endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
     prepare_mtp_draft
 

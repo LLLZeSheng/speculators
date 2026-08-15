@@ -1,223 +1,175 @@
-# Train GLM-5.2 MTP3 Online on Ascend
+# Train GLM-5.2 MTP3 Online on Eight Ascend 910C Nodes
 
-This recipe continues the native GLM-5.2 MTP layer on four Ascend 910B3
-nodes. One 16-NPU node serves the W4A8 verifier. Three 16-NPU nodes train one
-BF16 MTP layer with FSDP and HCCL. The same trainable layer is recursively
-unrolled for three speculative steps; the recipe does not create three MTP
-layers.
+This recipe uses four 16-NPU nodes as W4A8C8 verifier services and four
+16-NPU nodes as BF16 MTP trainers. Trainer `i` sends online hidden-state
+requests only to verifier `i`. Training is one 64-rank FSDP job; the same
+trainable native MTP layer is recursively unrolled for three speculative
+steps.
 
-## Environment
+## 1. Prerequisites
 
-The launcher targets this validated software and storage layout:
+- Eight Ascend 910C (Atlas A3) nodes, 16 NPUs per node
+- Docker image `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
+- `/kos_ulan` mounted on all eight nodes
+- this repository available at the same path on all nodes, preferably
+  `/kos_ulan/spec_train/speculators`
+- W4A8C8 verifier at
+  `/mnt/xds/dev/s00838505/GLM-5.2-w4a8c8` on all four verifier nodes
+- an unquantized BF16 GLM-5.2 checkpoint with its native MTP layer on
+  `/kos_ulan`
+- a Hugging Face dataset containing `input_ids`, `loss_mask`, and `seq_len`
 
-- 16 Ascend 910B3 NPUs per node, four nodes total
-- `torch_npu==2.10.0.post2`
-- `vllm==0.23.1rc1.dev1451+gd02df748b.d20260811`
-- `vllm-ascend==0.23.0rc1`
-- W4A8 verifier: `/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1`
-- BF16 native MTP source: `/mnt/xds/sfs/GLM-5.2`
-- shared filesystem mounted as `/mnt/xds/sfs` on every node
+The W4A8C8 model is inference-only. MTP initialization, parameters, forward
+calculation, gradients, and optimizer state remain BF16. Therefore
+`MTP_INIT_MODEL_PATH` must never point to the W4A8C8 checkpoint.
 
-The verifier checkpoint is used only for online hidden-state inference. MTP
-parameters, forward computation, gradients, and optimizer state remain BF16.
+The expected image versions are `torch_npu==2.10.0.post2`, `vllm==0.23.0`,
+and `vllm-ascend==0.23.0rc1`. Preflight checks these before model loading.
 
-Install this branch in the training environment on all nodes. Source the
-Ascend toolkit environment before invoking the launcher. Keep the vLLM Ascend
-environment on the verifier node compatible with the versions above.
+## 2. Fill one shared configuration file
 
-## Configuration
-
-The entry point is:
-
-```bash
-examples/train/mtp_glm52_ascend_online.sh
-```
-
-It is configured with environment variables. These defaults can be overridden
-without editing the script:
+Create the configuration once on shared storage:
 
 ```bash
-export DATA_PATH=/mnt/xds/sfs/datasets/glm52-dspark-train
-export HIDDEN_STATES_PATH=/mnt/xds/sfs/spec_train/online_hidden_states/glm52-w4a8
-export MTP_DRAFT_PATH=/mnt/xds/sfs/spec_train/initial/glm52-bf16-mtp3
-export OUTPUT_PATH=/mnt/xds/sfs/spec_train/checkpoints/glm52-w4a8-mtp3
-export LOG_ROOT=/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3
+mkdir -p /kos_ulan/spec_train/config /kos_ulan/spec_train/logs
+cp examples/train/mtp_glm52_ascend_online_4v4t.env.example \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 ```
 
-`DATA_PATH` may point at the existing DSpark token dataset. It must contain
-`input_ids`, `loss_mask`, and `seq_len`. Cached hidden states from another
-verifier are not read. The launcher uses `--force-generate` to bypass cached
-files, asks the W4A8 service for every sample, and removes each transient
-payload after the trainer consumes it. Online generation failures terminate
-the job instead of producing empty training batches.
+At minimum, replace these values:
 
-## Dry Run
+- `FILL_VERIFIER_0_IP` through `FILL_VERIFIER_3_IP`
+- `FILL_TRAINER_0_IP` through `FILL_TRAINER_3_IP`
+- `FILL_HCCL_NIC_NAME`, such as `eth0` or `bond0`
+- `FILL_BF16_GLM52_PATH`
+- `FILL_HF_DATASET_PATH`
+- `FILL_UNIQUE_SMOKE_ID`
 
-Inspect every resolved command without loading a model or creating shared
-artifacts:
+The addresses must be routable between nodes and appear in `hostname -I` on
+their respective nodes. The wrapper uses them to infer the local role and
+rank. If a host has ambiguous addresses, provide its intended address only for
+that invocation with `NODE_IP=...`.
+
+The remaining paths and training knobs have usable defaults in the example.
+Do not put passwords or registry credentials into this file.
+
+## 3. Inspect the resolved commands
+
+On any node, dry-run without loading a model:
 
 ```bash
-ROLE=verifier DRY_RUN=1 \
-  bash examples/train/mtp_glm52_ascend_online.sh
-
-ROLE=trainer DRY_RUN=1 \
-  VERIFIER_HOST=10.0.0.10 \
-  MASTER_ADDR=10.0.0.20 \
-  NODE_RANK=0 \
-  bash examples/train/mtp_glm52_ascend_online.sh
+cd /kos_ulan/spec_train/speculators
+DRY_RUN=1 bash examples/train/run_mtp_glm52_ascend_online_container.sh \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 ```
 
-Replace the example addresses below with addresses routable over the cluster's
-HCCL and service networks:
+Confirm the printed role, rank, local IP, verifier endpoint, model paths,
+Docker image, and all 16 `/dev/davinci*` devices. The wrapper mounts the shared
+filesystem, this checkout, the Ascend devices, and host driver files. It runs
+`pip install --no-deps -e`, so it does not replace the image's PyTorch or vLLM
+stack.
 
-- `10.0.0.10`: verifier node
-- `10.0.0.20`: trainer node 0 and rendezvous host
-- `10.0.0.21`: trainer node 1
-- `10.0.0.22`: trainer node 2
+## 4. Start four verifiers
 
-## Preflight
-
-Run the local checks on each node before allocating the full job:
+Run the same command on verifier nodes 0 through 3:
 
 ```bash
-ROLE=preflight \
-  bash examples/train/mtp_glm52_ascend_online.sh
+cd /kos_ulan/spec_train/speculators
+nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  > /kos_ulan/spec_train/logs/verifier-container-$(hostname).log 2>&1 &
 ```
 
-Preflight reads checkpoint metadata, verifies the critical native MTP tensors
-and referenced shards, compares the BF16 and W4A8 architecture and tokenizer
-assets, checks the token dataset, probes shared storage, verifies the pinned
-software versions, and verifies 16 visible NPUs. It does not load the full GLM
-checkpoint.
-
-## Start the Verifier
-
-On the verifier node:
-
-```bash
-ROLE=verifier \
-  bash examples/train/mtp_glm52_ascend_online.sh
-```
-
-The service uses tensor parallel size 16, an 8193-token maximum request length,
-and exposes `glm52-w4a8-verifier` on port 8000. Its log is:
+Each verifier uses DP2 x TP8, expert parallelism, Ascend quantization, DSA-CP,
+sparse C8 layer-index acceleration, and all 16 NPUs. Its application log is:
 
 ```text
-/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/verifier/verifier.log
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log
+...
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
 ```
 
-Do not start training until this returns HTTP 200 from a trainer node:
+Check all four configured verifier IPs before training:
 
 ```bash
-curl -f http://10.0.0.10:8000/health
+curl -f http://VERIFIER_IP:8077/health
 ```
 
-## Smoke Test
+The four services share a port because they run on different hosts. Metadata
+publication to `/kos_ulan/spec_train/metadata/glm52-w4a8c8` is protected by a
+shared lock and an atomic ready marker.
 
-Start these three commands close together in separate terminals or through the
-cluster launcher. Node 0 atomically converts the BF16 native MTP layer once;
-nodes 1 and 2 wait for its shared ready marker.
+## 5. Run the four-trainer smoke test
 
-Choose one fresh identifier and export the same value on all three trainer
-nodes. Reusing an identifier is rejected when its output directory exists:
+The configuration defaults to `TRAINER_MODE=smoke`. Once every verifier is
+healthy, run the same command close together on trainer nodes 0 through 3:
 
 ```bash
-export SMOKE_RUN_ID=smoke-20260813-01
+cd /kos_ulan/spec_train/speculators
+nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  > /kos_ulan/spec_train/logs/smoke-container-$(hostname).log 2>&1 &
 ```
 
-Trainer node 0:
+The wrapper maps trainer `i` to rank `i`, rendezvous address trainer 0, and
+verifier `i`. Smoke mode selects 64 samples, caps context at 1024 tokens, and
+runs two optimizer steps through the real online hidden-state path. Success
+requires all 64 ranks to finish without HCCL errors, OOM, unsupported
+operators, non-finite loss, generation failures, or checkpoint errors.
+
+Choose a new `SMOKE_RUN_ID` before repeating a smoke test; existing smoke
+output is deliberately not overwritten.
+
+## 6. Start full training
+
+After smoke succeeds, start the same command on all four trainer nodes with an
+environment override:
 
 ```bash
-ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
-  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=0 \
-  bash examples/train/mtp_glm52_ascend_online.sh
+cd /kos_ulan/spec_train/speculators
+TRAINER_MODE=trainer nohup \
+  bash examples/train/run_mtp_glm52_ascend_online_container.sh \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  > /kos_ulan/spec_train/logs/trainer-container-$(hostname).log 2>&1 &
 ```
 
-Trainer node 1:
+Start all four commands close together. Defaults are 4096 tokens per NPU,
+five epochs, AdamW, cosine decay with 3% warmup, and one checkpoint per 1000
+global optimizer steps. Increase `TOTAL_SEQ_LEN` only after a representative
+smoke test proves memory headroom. `VERIFIER_MAX_MODEL_LEN` must exceed
+`TOTAL_SEQ_LEN` by at least one token.
 
-```bash
-ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
-  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=1 \
-  bash examples/train/mtp_glm52_ascend_online.sh
-```
-
-Trainer node 2:
-
-```bash
-ROLE=smoke SMOKE_RUN_ID=$SMOKE_RUN_ID \
-  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=2 \
-  bash examples/train/mtp_glm52_ascend_online.sh
-```
-
-Smoke mode selects 64 samples into run-specific shared storage, truncates each
-online request to a 1024-token context, and performs two optimizer steps through
-the real online hidden-state path. It writes separate
-`-smoke-$SMOKE_RUN_ID` checkpoint, metric, and log directories and disables
-checkpoint resume. Treat smoke
-as successful only when all 48 ranks finish without HCCL, OOM, unsupported
-operator, non-finite loss, or checkpoint errors.
-
-## Full Training
-
-After smoke succeeds, replace `ROLE=smoke` with `ROLE=trainer` on the same
-three nodes. For example, trainer node 0 runs:
-
-```bash
-ROLE=trainer VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=0 \
-  bash examples/train/mtp_glm52_ascend_online.sh
-```
-
-Use `NODE_RANK=1` and `NODE_RANK=2` on the other trainer nodes. The default
-training configuration uses 4096 tokens per NPU batch, BF16 hidden states,
-AdamW, cosine decay with 3% warmup, five epochs, and a checkpoint every 1000
-global steps. The 4096-token default is conservative because FSDP does not
-shard activations. Increase it to 8192 only after an actual 910B3 smoke run
-demonstrates sufficient memory headroom. The verifier context must be at least
-one token longer because hidden-state extraction requests one output token;
-the launcher rejects `TOTAL_SEQ_LEN >= VERIFIER_MAX_MODEL_LEN`. Override any
-setting when needed:
-
-```bash
-EPOCHS=1 CHECKPOINT_STEPS=500 TOTAL_SEQ_LEN=4096 ROLE=trainer \
-  VERIFIER_HOST=10.0.0.10 MASTER_ADDR=10.0.0.20 NODE_RANK=0 \
-  bash examples/train/mtp_glm52_ascend_online.sh
-```
-
-Trainer logs are written as:
+Trainer logs:
 
 ```text
-/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/trainer-node0.log
-/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/trainer-node1.log
-/mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/trainer-node2.log
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node0.log
+...
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node3.log
 ```
 
-Checkpoints are under:
+Checkpoints:
 
 ```text
-/mnt/xds/sfs/spec_train/checkpoints/glm52-w4a8-mtp3
+/kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3
 ```
 
-Start TensorBoard on a reachable node with:
+TensorBoard:
 
 ```bash
 tensorboard \
-  --logdir /mnt/xds/sfs/spec_train/logs/glm52-w4a8-mtp3/metrics \
-  --host 0.0.0.0 \
-  --port 6006
+  --logdir /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/metrics \
+  --host 0.0.0.0 --port 6006
 ```
 
-## Stop and Resume
+## 7. Stop and resume
 
-Send `SIGTERM` or press Ctrl-C on every trainer node. The launcher forwards the
-signal to `torchrun`; the trainer's graceful-shutdown path saves a manual
-recovery snapshot under `OUTPUT_PATH/interrupted`. Automatic resume deliberately
-ignores that directory and restarts from the latest numbered checkpoint. To
-load the interrupted weights instead, first follow the warning printed by the
-checkpointer and rename `interrupted` to a new numeric checkpoint directory.
-That recovery starts at an epoch boundary and does not preserve the exact
-within-epoch data position. Stop the verifier only after every trainer process
-has exited.
+Stop trainer containers on all four trainer nodes together. A forwarded
+`SIGTERM` lets the training process create an `interrupted` recovery snapshot.
+Normal startup resumes the latest numbered checkpoint. An interrupted snapshot
+should be inspected and explicitly renamed to a new numeric checkpoint only if
+it must be used; data position is restored only at an epoch boundary.
 
-If preflight reports an existing MTP or smoke directory without `.ready`, do
-not remove it automatically. Inspect whether another node is still producing
-it, then move or remove the incomplete directory manually before retrying.
+If a shared MTP initialization, metadata, or smoke directory exists without
+its `.ready` marker, first confirm that no node is producing it. Move the
+incomplete directory aside rather than deleting it blindly, then rerun.

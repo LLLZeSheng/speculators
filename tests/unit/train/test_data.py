@@ -672,6 +672,8 @@ def test_arrow_dataset_force_generate_bypasses_cached_payload(tmp_path: Path):
     transfer.get_cached.assert_not_called()
     assert sample is not None
     assert sample["input_ids"].tolist() == [1, 2, 3, 4]
+    assert sample["loss_mask"].dtype == torch.bool
+    assert sample["loss_mask"].tolist() == [True, True, True, True]
 
 
 def test_arrow_dataset_truncates_online_request_before_vllm(
