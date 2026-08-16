@@ -6,7 +6,7 @@ set -euo pipefail
 
 PYTHON_BIN=${PYTHON_BIN:-python}
 SOURCE_MODEL=${SOURCE_MODEL:-/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1}
-RUNTIME_MODEL=${RUNTIME_MODEL:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim}
+RUNTIME_MODEL=${RUNTIME_MODEL:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v2}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -21,7 +21,7 @@ fi
 if (( $# == 1 )); then
     printf 'SOURCE_MODEL=%s\n' "$SOURCE_MODEL"
     printf 'RUNTIME_MODEL=%s\n' "$RUNTIME_MODEL"
-    printf 'ACTION=create ModelSlim runtime view and set quant_method=ascend\n'
+    printf 'ACTION=create ModelSlim runtime view and defer quantization to --quantization ascend\n'
     exit 0
 fi
 
@@ -32,12 +32,13 @@ fi
 [[ $SOURCE_MODEL != "$RUNTIME_MODEL" ]] || fail "source and runtime paths must differ"
 
 if [[ -f $RUNTIME_MODEL/.ready ]]; then
-    detected=$(
+    has_embedded_quant=$(
         "$PYTHON_BIN" -c \
-            'import json,sys; print(json.load(open(sys.argv[1]))["quantization_config"]["quant_method"])' \
+            'import json,sys; print("yes" if "quantization_config" in json.load(open(sys.argv[1])) else "no")' \
             "$RUNTIME_MODEL/config.json"
     )
-    [[ $detected == ascend ]] || fail "existing runtime model has quant_method=$detected"
+    [[ $has_embedded_quant == no ]] || \
+        fail "existing runtime model still embeds quantization_config"
     printf 'RUNTIME_MODEL_PATH=%s\n' "$RUNTIME_MODEL"
     printf 'QUANT_METHOD=ascend\n'
     printf 'PREPARE_STATUS=already-ready\n'
@@ -82,17 +83,21 @@ source = sys.argv[2]
 with open(path, encoding="utf-8") as handle:
     config = json.load(handle)
 quant = config.get("quantization_config")
-if not isinstance(quant, dict):
-    raise SystemExit("config.json has no quantization_config object")
-original = quant.get("quant_method")
-quant["quant_method"] = "ascend"
+original = quant.get("quant_method") if isinstance(quant, dict) else None
+# AscendModelSlimConfig.from_config() treats any embedded quantization_config
+# as the actual per-layer quant_description.  This source model embeds a
+# compressed-tensors schema there, while its real ModelSlim layer map lives in
+# quant_model_description.json.  Remove the embedded block so
+# --quantization ascend creates an empty ModelSlim config and then loads the
+# dedicated description file via maybe_update_config().
+config.pop("quantization_config", None)
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(config, handle, ensure_ascii=False, indent=2)
     handle.write("\n")
 manifest = {
     "source_model": source,
     "original_quant_method": original,
-    "runtime_quant_method": "ascend",
+    "runtime_quant_method": "ascend (selected by CLI)",
     "weight_format": "Ascend ModelSlim W4A8",
     "note": "config-only runtime view; weights are symlinks",
 }
