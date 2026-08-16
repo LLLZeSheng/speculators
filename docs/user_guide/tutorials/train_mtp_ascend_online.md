@@ -26,6 +26,13 @@ calculation, gradients, and optimizer state remain BF16. Therefore
 The expected image versions are `torch_npu==2.10.0.post2`, `vllm==0.23.0`,
 and `vllm-ascend==0.23.0rc1`. Preflight checks these before model loading.
 
+This verifier declares `quant_method=compressed-tensors` but stores mixed W8A8
+and W4A8 module widths in one dictionary-valued `num_bits` field. The launcher
+creates a non-invasive, standards-compatible runtime model view and lets vLLM
+auto-detect `compressed-tensors`; it does not pass `--quantization ascend`.
+See [GLM-5.2 mixed compressed-tensors quantization](glm52_mixed_compressed_tensors.md)
+for the root cause, upstream W4A8 MoE support, generated paths, and validation.
+
 ## 2. Fill one shared configuration file
 
 Create the configuration once on shared storage:
@@ -81,8 +88,9 @@ nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   > /kos_ulan/spec_train/logs/verifier-container-$(hostname).log 2>&1 &
 ```
 
-Each verifier uses DP2 x TP8, expert parallelism, Ascend quantization, DSA-CP,
-sparse C8 layer-index acceleration, and all 16 NPUs. Its application log is:
+Each verifier uses DP2 x TP8, expert parallelism, mixed W8A8/W4A8
+`compressed-tensors`, DSA-CP, sparse C8 layer-index acceleration, and all 16
+NPUs. Its application log is:
 
 ```text
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log

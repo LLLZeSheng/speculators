@@ -79,11 +79,19 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--tensor-parallel-size 8" in result.stdout
     assert "--max-model-len 8193" in result.stdout
     assert "--max-num-batched-tokens 8192" in result.stdout
-    assert "--quantization ascend" in result.stdout
+    assert "scripts/prepare_mixed_quant_model.py" in result.stdout
+    assert "--quantization ascend" not in result.stdout
     assert "--enable-expert-parallel" in result.stdout
     assert "--required-devices 16" in result.stdout
     assert "--served-model-name glm52-w4a8c8-verifier" in result.stdout
     assert "/kos_ulan/spec_train/metadata/glm52-w4a8c8" in result.stdout
+
+
+def test_verifier_can_still_select_modelslim_ascend_quantization():
+    result = _run("verifier", VERIFIER_QUANTIZATION_MODE="ascend")
+
+    assert result.returncode == 0, result.stderr
+    assert "--quantization ascend" in result.stdout
 
 
 def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():

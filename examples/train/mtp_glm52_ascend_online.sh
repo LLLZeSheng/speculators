@@ -24,6 +24,10 @@ MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-bf16-mt
 OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp3}
 LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp3}
 VERIFIER_METADATA_PATH=${VERIFIER_METADATA_PATH:-${SHARED_ROOT}/spec_train/metadata/glm52-w4a8c8}
+VERIFIER_RUNTIME_ROOT=${VERIFIER_RUNTIME_ROOT:-${SHARED_ROOT}/spec_train/runtime_models/glm52-w4a8c8}
+# auto inspects quantization_config.quant_method. compressed-tensors deliberately
+# adds no --quantization flag; ascend adds --quantization ascend.
+VERIFIER_QUANTIZATION_MODE=${VERIFIER_QUANTIZATION_MODE:-auto}
 
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-glm52-w4a8c8-verifier}
 VERIFIER_HOST=${VERIFIER_HOST:-}
@@ -142,6 +146,13 @@ validate_verifier_id() {
         fail "VERIFIER_ID must be in [0, 3]"
 }
 
+validate_verifier_quantization_mode() {
+    case "$VERIFIER_QUANTIZATION_MODE" in
+        auto | ascend | compressed-tensors) ;;
+        *) fail "VERIFIER_QUANTIZATION_MODE must be auto, ascend, or compressed-tensors" ;;
+    esac
+}
+
 validate_trainer_topology() {
     require_value VERIFIER_HOST
     require_value MASTER_ADDR
@@ -179,6 +190,8 @@ Resolved Ascend MTP3 configuration:
   OUTPUT_PATH=$OUTPUT_PATH
   LOG_ROOT=$LOG_ROOT
   VERIFIER_METADATA_PATH=$VERIFIER_METADATA_PATH
+  VERIFIER_RUNTIME_ROOT=$VERIFIER_RUNTIME_ROOT
+  VERIFIER_QUANTIZATION_MODE=$VERIFIER_QUANTIZATION_MODE
   VERIFIER_ID=$VERIFIER_ID VERIFIER_HOST=${VERIFIER_HOST:-<unset>} VERIFIER_PORT=$VERIFIER_PORT
   MASTER_ADDR=${MASTER_ADDR:-<unset>} MASTER_PORT=$MASTER_PORT
   NNODES=$NNODES NPROC_PER_NODE=$NPROC_PER_NODE NODE_RANK=${NODE_RANK:-<unset>}
@@ -186,6 +199,39 @@ Resolved Ascend MTP3 configuration:
   VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
 EOF
+}
+
+VERIFIER_RUNTIME_MODEL_PATH=$VERIFIER_MODEL_PATH
+VERIFIER_DETECTED_QUANT_METHOD=
+prepare_verifier_runtime_model() {
+    local prepare_cmd=(
+        "$PYTHON_BIN" "$REPO_ROOT/scripts/prepare_mixed_quant_model.py"
+        --model "$VERIFIER_MODEL_PATH"
+        --runtime-root "$VERIFIER_RUNTIME_ROOT/verifier${VERIFIER_ID}"
+    )
+    if [[ $DRY_RUN == 1 ]]; then
+        print_cmd "${prepare_cmd[@]}"
+        if [[ $VERIFIER_QUANTIZATION_MODE != auto ]]; then
+            VERIFIER_DETECTED_QUANT_METHOD=$VERIFIER_QUANTIZATION_MODE
+        fi
+        return
+    fi
+
+    local output
+    output=$("${prepare_cmd[@]}") || fail "failed to prepare verifier quantization metadata"
+    local -a result=()
+    mapfile -t result <<<"$output"
+    ((${#result[@]} == 3)) || fail "unexpected mixed-quant preparation output"
+    VERIFIER_RUNTIME_MODEL_PATH=${result[0]}
+    VERIFIER_DETECTED_QUANT_METHOD=${result[1]}
+    printf '[quantization] method=%s metadata=%s model=%s\n' \
+        "${VERIFIER_DETECTED_QUANT_METHOD:-none}" "${result[2]}" \
+        "$VERIFIER_RUNTIME_MODEL_PATH"
+
+    if [[ $VERIFIER_QUANTIZATION_MODE != auto && \
+          $VERIFIER_DETECTED_QUANT_METHOD != "$VERIFIER_QUANTIZATION_MODE" ]]; then
+        fail "requested quantization mode $VERIFIER_QUANTIZATION_MODE does not match model method ${VERIFIER_DETECTED_QUANT_METHOD:-none}"
+    fi
 }
 
 preflight_args() {
@@ -261,12 +307,22 @@ run_preflight() {
 
 run_verifier() {
     validate_verifier_id
+    validate_verifier_quantization_mode
     run_preflight --require-vllm
+    prepare_verifier_runtime_model
     publish_verifier_metadata
     local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"
+    local effective_quantization_mode=$VERIFIER_QUANTIZATION_MODE
+    if [[ $effective_quantization_mode == auto ]]; then
+        effective_quantization_mode=$VERIFIER_DETECTED_QUANT_METHOD
+    fi
+    local quantization_args=()
+    if [[ $effective_quantization_mode == ascend ]]; then
+        quantization_args+=(--quantization ascend)
+    fi
     local cmd=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/launch_vllm.py"
-        "$VERIFIER_MODEL_PATH"
+        "$VERIFIER_RUNTIME_MODEL_PATH"
         --hidden-states-backend file
         --hidden-states-path "$HIDDEN_STATES_PATH"
         --target-layer-ids "$TARGET_LAYER_ID"
@@ -284,7 +340,7 @@ run_verifier() {
         --max-model-len "$VERIFIER_MAX_MODEL_LEN"
         --max-num-batched-tokens "$VERIFIER_MAX_BATCHED_TOKENS"
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
-        --quantization ascend
+        "${quantization_args[@]}"
         --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
         --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"enable_balance_scheduling":true,"multistream_overlap_shared_expert":true}'
         --trust-remote-code

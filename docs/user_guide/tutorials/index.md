@@ -38,6 +38,11 @@ Learn how to finetune a model's native MTP head on domain-specific data using on
 
 **Time required:** ~8 mins for Qwen3.5-9B on 2x H200 GPUs (varies by model size)
 
+## [GLM-5.2 Mixed Quantization on vLLM Ascend](glm52_mixed_compressed_tensors.md)
+
+Normalize mixed W8A8/W4A8 `compressed-tensors` metadata without modifying or
+duplicating the original checkpoint.
+
 ## [Response Regeneration](response_regeneration.md)
 
 Regenerate dataset responses using your target model for improved drafter alignment.
