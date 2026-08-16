@@ -1,69 +1,69 @@
 # Train GLM-5.2 MTP3 Online on Eight Ascend 910C Nodes
 
-This recipe uses four 16-NPU nodes as W4A8C8 verifier services and four
-16-NPU nodes as BF16 MTP trainers. Trainer `i` sends online hidden-state
-requests only to verifier `i`. Training is one 64-rank FSDP job; the same
-trainable native MTP layer is recursively unrolled for three speculative
-steps.
+This is the production runbook for four 16-NPU verifier nodes plus four
+16-NPU trainer nodes. Trainer `i` uses verifier `i`; the trainers form one
+64-rank FSDP job.
 
-## 1. Prerequisites
+The intended data lifecycle is:
 
-- Eight Ascend 910C (Atlas A3) nodes, 16 NPUs per node
-- Docker image `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
-- `/kos_ulan` mounted on all eight nodes
-- this repository available at the same path on all nodes, preferably
-  `/kos_ulan/spec_train/speculators`
-- W4A8C8 verifier at
-  `/mnt/xds/dev/s00838505/GLM-5.2-w4a8c8` on all four verifier nodes
-- an unquantized BF16 GLM-5.2 checkpoint with its native MTP layer on
-  `/kos_ulan`
+```text
+epoch 1: online generation -> persistent hidden-state cache -> training
+epoch 2+: read the same cache -> ordinary offline-style training
+```
+
+The first epoch uses `--on-missing generate --on-generate cache` and does not
+use `--force-generate`. Consequently every later access is a local/shared-file
+cache hit. An explicit `offline` mode is provided for strict resumes; it uses
+`--on-missing raise` and does not pass a vLLM endpoint.
+
+## 1. Fixed environment and model contract
+
+- image: `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
+- shared filesystem: `/kos_ulan` on all eight nodes
+- checkout: preferably `/kos_ulan/spec_train/speculators`
+- prepared verifier:
+  `/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4`
+- verifier source weights:
+  `/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1`
+- a BF16 GLM-5.2 checkpoint containing the native MTP layer on `/kos_ulan`
 - a Hugging Face dataset containing `input_ids`, `loss_mask`, and `seq_len`
 
-The W4A8C8 model is inference-only. MTP initialization, parameters, forward
-calculation, gradients, and optimizer state remain BF16. Therefore
-`MTP_INIT_MODEL_PATH` must never point to the W4A8C8 checkpoint.
+The W4A8 verifier is inference-only. MTP initialization and training remain
+BF16, so `MTP_INIT_MODEL_PATH` must point to the BF16 model. The verifier must
+use `VERIFIER_QUANTIZATION_MODE=ascend`; see
+[the MG13 ModelSlim diagnosis](glm52_mixed_compressed_tensors.md).
 
-The expected image versions are `torch_npu==2.10.0.post2`, `vllm==0.23.0`,
-and `vllm-ascend==0.23.0rc1`. Preflight checks these before model loading.
+Expected image packages are `torch_npu==2.10.0.post2`, `vllm==0.23.0`, and
+`vllm-ascend==0.23.0rc1`.
 
-This verifier declares `quant_method=compressed-tensors` but stores mixed W8A8
-and W4A8 module widths in one dictionary-valued `num_bits` field. The launcher
-creates a non-invasive, standards-compatible runtime model view and lets vLLM
-auto-detect `compressed-tensors`; it does not pass `--quantization ascend`.
-See [GLM-5.2 mixed compressed-tensors quantization](glm52_mixed_compressed_tensors.md)
-for the root cause, upstream W4A8 MoE support, generated paths, and validation.
-
-## 2. Fill one shared configuration file
-
-Create the configuration once on shared storage:
+## 2. Create the shared configuration
 
 ```bash
+cd /kos_ulan/spec_train/speculators
 mkdir -p /kos_ulan/spec_train/config /kos_ulan/spec_train/logs
 cp examples/train/mtp_glm52_ascend_online_4v4t.env.example \
   /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 ```
 
-At minimum, replace these values:
+Fill all eight IPs, `NIC_NAME`, `MTP_INIT_MODEL_PATH`, `DATA_PATH`, and a
+unique `SMOKE_RUN_ID`. Verify these critical values:
 
-- `FILL_VERIFIER_0_IP` through `FILL_VERIFIER_3_IP`
-- `FILL_TRAINER_0_IP` through `FILL_TRAINER_3_IP`
-- `FILL_HCCL_NIC_NAME`, such as `eth0` or `bond0`
-- `FILL_BF16_GLM52_PATH`
-- `FILL_HF_DATASET_PATH`
-- `FILL_UNIQUE_SMOKE_ID`
+```bash
+VERIFIER_MODEL_PATH=/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+VERIFIER_SOURCE_MODEL_PATH=/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+VERIFIER_QUANTIZATION_MODE=ascend
+TRAINER_MODE=smoke
+TRAINER_DATA_MODE=online-cache
+EPOCHS=5
+```
 
-The addresses must be routable between nodes and appear in `hostname -I` on
-their respective nodes. The wrapper uses them to infer the local role and
-rank. If a host has ambiguous addresses, provide its intended address only for
-that invocation with `NODE_IP=...`.
+Use one identical file on all nodes. IPs must be mutually routable and appear
+in `hostname -I`. Use `NODE_IP=<chosen-ip>` for a host with ambiguous IPs.
 
-The remaining paths and training knobs have usable defaults in the example.
-Do not put passwords or registry credentials into this file.
+## 3. Dry-run and smoke test
 
-## 3. Inspect the resolved commands
-
-On any node, dry-run without loading a model:
+On one verifier and one trainer, inspect commands without loading models:
 
 ```bash
 cd /kos_ulan/spec_train/speculators
@@ -71,15 +71,10 @@ DRY_RUN=1 bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 ```
 
-Confirm the printed role, rank, local IP, verifier endpoint, model paths,
-Docker image, and all 16 `/dev/davinci*` devices. The wrapper mounts the shared
-filesystem, this checkout, the Ascend devices, and host driver files. It runs
-`pip install --no-deps -e`, so it does not replace the image's PyTorch or vLLM
-stack.
+Verifier output must contain `--quantization ascend`, must use the v4 path,
+and must not invoke `prepare_mixed_quant_model.py`.
 
-## 4. Start four verifiers
-
-Run the same command on verifier nodes 0 through 3:
+Start all four verifiers with the same command on each verifier node:
 
 ```bash
 cd /kos_ulan/spec_train/speculators
@@ -88,30 +83,15 @@ nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   > /kos_ulan/spec_train/logs/verifier-container-$(hostname).log 2>&1 &
 ```
 
-Each verifier uses DP2 x TP8, expert parallelism, mixed W8A8/W4A8
-`compressed-tensors`, DSA-CP, sparse C8 layer-index acceleration, and all 16
-NPUs. Its application log is:
-
-```text
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log
-...
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
-```
-
-Check all four configured verifier IPs before training:
+Wait for all four health checks:
 
 ```bash
 curl -f http://VERIFIER_IP:8077/health
 ```
 
-The four services share a port because they run on different hosts. Metadata
-publication to `/kos_ulan/spec_train/metadata/glm52-w4a8c8` is protected by a
-shared lock and an atomic ready marker.
-
-## 5. Run the four-trainer smoke test
-
-The configuration defaults to `TRAINER_MODE=smoke`. Once every verifier is
-healthy, run the same command close together on trainer nodes 0 through 3:
+With `TRAINER_MODE=smoke`, run the wrapper close together on all four trainer
+nodes. Smoke uses 64 samples and two steps, and deletes its generated files so
+it does not contaminate the production cache:
 
 ```bash
 cd /kos_ulan/spec_train/speculators
@@ -120,46 +100,76 @@ nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   > /kos_ulan/spec_train/logs/smoke-container-$(hostname).log 2>&1 &
 ```
 
-The wrapper maps trainer `i` to rank `i`, rendezvous address trainer 0, and
-verifier `i`. Smoke mode selects 64 samples, caps context at 1024 tokens, and
-runs two optimizer steps through the real online hidden-state path. Success
-requires all 64 ranks to finish without HCCL errors, OOM, unsupported
-operators, non-finite loss, generation failures, or checkpoint errors.
+All 64 trainer ranks must exit successfully. Use a new `SMOKE_RUN_ID` for a
+repeat.
 
-Choose a new `SMOKE_RUN_ID` before repeating a smoke test; existing smoke
-output is deliberately not overwritten.
+## 4. Production: online-cache first epoch, cache hits thereafter
 
-## 6. Start full training
-
-After smoke succeeds, start the same command on all four trainer nodes with an
-environment override:
+Set `TRAINER_MODE=trainer`, keep `TRAINER_DATA_MODE=online-cache`, and keep the
+final total `EPOCHS` value (for example 5) from the beginning. Start on all
+four trainer nodes within the HCCL rendezvous timeout:
 
 ```bash
 cd /kos_ulan/spec_train/speculators
-TRAINER_MODE=trainer nohup \
+TRAINER_MODE=trainer TRAINER_DATA_MODE=online-cache nohup \
   bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
   > /kos_ulan/spec_train/logs/trainer-container-$(hostname).log 2>&1 &
 ```
 
-Start all four commands close together. Defaults are 4096 tokens per NPU,
-five epochs, AdamW, cosine decay with 3% warmup, and one checkpoint per 1000
-global optimizer steps. Increase `TOTAL_SEQ_LEN` only after a representative
-smoke test proves memory headroom. `VERIFIER_MAX_MODEL_LEN` must exceed
-`TOTAL_SEQ_LEN` by at least one token.
+Do not launch epoch 1 as a separate `EPOCHS=1` job. Starting with the final
+epoch count preserves one continuous optimizer and cosine scheduler. At the
+end of epoch 1, both training and validation partitions have been traversed,
+the numbered checkpoint exists, and hidden states are persistent under:
 
-Trainer logs:
+```text
+/kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
+```
+
+Epochs 2 through 5 first look up each sample in that cache, so they follow the
+offline data path and issue no generation request for complete entries. Keep
+the verifiers alive for the first production run as a safety net; their
+request counters should become flat after epoch 1.
+
+## 5. Strict offline resume
+
+After epoch 1 has completed successfully, any later restart may use strict
+offline mode:
+
+```bash
+cd /kos_ulan/spec_train/speculators
+TRAINER_MODE=trainer TRAINER_DATA_MODE=offline nohup \
+  bash examples/train/run_mtp_glm52_ascend_online_container.sh \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  > /kos_ulan/spec_train/logs/trainer-offline-container-$(hostname).log 2>&1 &
+```
+
+Start it on all four trainers. It automatically resumes the latest numbered
+checkpoint, passes no verifier endpoint, and fails on the first missing cache
+entry. This fail-closed behavior prevents accidental partial online/offline
+training. Verifiers may be stopped only after this strict run has begun
+fetching batches successfully on every trainer.
+
+Never change `DATA_PATH`, `TRAIN_DATA_RATIO`, `TOTAL_SEQ_LEN`,
+`HIDDEN_STATES_PATH`, `OUTPUT_PATH`, or `RUN_NAME` between the two modes.
+
+## 6. Logs, checkpoints, and TensorBoard
+
+Verifier logs:
+
+```text
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log
+...
+/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
+```
+
+Trainer logs and checkpoints:
 
 ```text
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node0.log
 ...
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node3.log
-```
-
-Checkpoints:
-
-```text
-/kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3
+/kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3/
 ```
 
 TensorBoard:
@@ -170,14 +180,26 @@ tensorboard \
   --host 0.0.0.0 --port 6006
 ```
 
-## 7. Stop and resume
+Useful checks:
 
-Stop trainer containers on all four trainer nodes together. A forwarded
-`SIGTERM` lets the training process create an `interrupted` recovery snapshot.
-Normal startup resumes the latest numbered checkpoint. An interrupted snapshot
-should be inspected and explicitly renamed to a new numeric checkpoint only if
-it must be used; data position is restored only at an epoch boundary.
+```bash
+grep -E "Training epoch|Validation epoch|Saving checkpoint|ERROR|Traceback" \
+  /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node0.log | tail -100
+find /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8 \
+  -type f -name 'hs_*.safetensors' | wc -l
+du -sh /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
+```
 
-If a shared MTP initialization, metadata, or smoke directory exists without
-its `.ready` marker, first confirm that no node is producing it. Move the
-incomplete directory aside rather than deleting it blindly, then rerun.
+Success means finite loss, no HCCL or generation error, a completed epoch-1
+validation, a numbered checkpoint, increasing cache file count during epoch
+1, and stable cache count during later epochs.
+
+## 7. Recovery rules
+
+- Stop or restart all four trainer nodes together.
+- A normal restart resumes the latest numbered checkpoint.
+- Do not treat an `interrupted` directory as a completed epoch checkpoint
+  without inspection.
+- Do not delete a shared cache while any trainer or verifier is running.
+- If a shared initialization/metadata directory lacks `.ready`, first prove no
+  producer is active, then move the incomplete directory aside for diagnosis.

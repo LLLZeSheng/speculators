@@ -38,10 +38,14 @@ Learn how to finetune a model's native MTP head on domain-specific data using on
 
 **Time required:** ~8 mins for Qwen3.5-9B on 2x H200 GPUs (varies by model size)
 
-## [GLM-5.2 Mixed Quantization on vLLM Ascend](glm52_mixed_compressed_tensors.md)
+## [Train GLM-5.2 MTP3 on Eight Ascend Nodes](train_mtp_ascend_online.md)
 
-Normalize mixed W8A8/W4A8 `compressed-tensors` metadata without modifying or
-duplicating the original checkpoint.
+Run a four-verifier plus four-trainer job whose first epoch caches online
+hidden states and whose later epochs reuse them like offline training.
+
+## [GLM-5.2 MG13 W4A8 on vLLM Ascend](glm52_mixed_compressed_tensors.md)
+
+Prepare a non-destructive ModelSlim runtime view, including native MTP metadata.
 
 ## [Response Regeneration](response_regeneration.md)
 

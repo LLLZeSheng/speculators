@@ -14,7 +14,7 @@ PYTHON_BIN=${PYTHON_BIN:-python}
 TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 
 SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
-VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/dev/s00838505/GLM-5.2-w4a8c8}
+VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4}
 # The W4A8C8 verifier is inference-only. This path must point to an unquantized
 # GLM-5.2 checkpoint containing the native MTP layer.
 MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-${SHARED_ROOT}/models/GLM-5.2}
@@ -25,9 +25,9 @@ OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mt
 LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp3}
 VERIFIER_METADATA_PATH=${VERIFIER_METADATA_PATH:-${SHARED_ROOT}/spec_train/metadata/glm52-w4a8c8}
 VERIFIER_RUNTIME_ROOT=${VERIFIER_RUNTIME_ROOT:-${SHARED_ROOT}/spec_train/runtime_models/glm52-w4a8c8}
-# auto inspects quantization_config.quant_method. compressed-tensors deliberately
-# adds no --quantization flag; ascend adds --quantization ascend.
-VERIFIER_QUANTIZATION_MODE=${VERIFIER_QUANTIZATION_MODE:-auto}
+# MG13 is an Ascend ModelSlim checkpoint even though its source config declared
+# compressed-tensors. Point at the prepared v4 runtime view and select ascend.
+VERIFIER_QUANTIZATION_MODE=${VERIFIER_QUANTIZATION_MODE:-ascend}
 
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-glm52-w4a8c8-verifier}
 VERIFIER_HOST=${VERIFIER_HOST:-}
@@ -62,6 +62,9 @@ NUM_WORKERS=${NUM_WORKERS:-1}
 PREFETCH_FACTOR=${PREFETCH_FACTOR:-2}
 MAX_STEPS=${MAX_STEPS:-}
 RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
+# online-cache: generate missing hidden states once and persist them.
+# offline: prohibit generation and consume only the persisted first-epoch cache.
+TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-online-cache}
 
 SMOKE_SAMPLES=${SMOKE_SAMPLES:-64}
 SMOKE_RUN_ID=${SMOKE_RUN_ID:-}
@@ -170,6 +173,13 @@ validate_trainer_topology() {
     fi
 }
 
+validate_trainer_data_mode() {
+    case "$TRAINER_DATA_MODE" in
+        online-cache | offline) ;;
+        *) fail "TRAINER_DATA_MODE must be online-cache or offline" ;;
+    esac
+}
+
 validate_context_window() {
     local input_length=$1
     [[ $input_length =~ ^[0-9]+$ && $VERIFIER_MAX_MODEL_LEN =~ ^[0-9]+$ ]] || \
@@ -198,12 +208,26 @@ Resolved Ascend MTP3 configuration:
   LOCAL_IP=${LOCAL_IP:-<auto>} NIC_NAME=${NIC_NAME:-<auto>}
   VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
+  TRAINER_DATA_MODE=$TRAINER_DATA_MODE
 EOF
 }
 
 VERIFIER_RUNTIME_MODEL_PATH=$VERIFIER_MODEL_PATH
 VERIFIER_DETECTED_QUANT_METHOD=
 prepare_verifier_runtime_model() {
+    if [[ $VERIFIER_QUANTIZATION_MODE == ascend ]]; then
+        VERIFIER_RUNTIME_MODEL_PATH=$VERIFIER_MODEL_PATH
+        VERIFIER_DETECTED_QUANT_METHOD=ascend
+        if [[ $DRY_RUN == 1 ]]; then
+            printf '[quantization] use prepared Ascend ModelSlim model: %s\n' \
+                "$VERIFIER_RUNTIME_MODEL_PATH"
+            return
+        fi
+        [[ -f $VERIFIER_MODEL_PATH/quant_model_description.json ]] || \
+            fail "Ascend ModelSlim model lacks quant_model_description.json: $VERIFIER_MODEL_PATH"
+        return
+    fi
+
     local prepare_cmd=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/prepare_mixed_quant_model.py"
         --model "$VERIFIER_MODEL_PATH"
@@ -430,8 +454,13 @@ prepare_smoke_data() {
 run_trainer() {
     local mode=$1
     validate_trainer_topology
+    validate_trainer_data_mode
     wait_for_marker "$VERIFIER_METADATA_PATH/.ready" "verifier metadata"
-    run_preflight --endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+    if [[ $mode == smoke || $TRAINER_DATA_MODE == online-cache ]]; then
+        run_preflight --endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+    else
+        run_preflight
+    fi
     prepare_mtp_draft
 
     local effective_data=$DATA_PATH
@@ -454,6 +483,29 @@ run_trainer() {
     fi
     validate_context_window "$effective_seq_len"
 
+    local hidden_state_args=(
+        --hidden-states-backend file
+        --hidden-states-path "$HIDDEN_STATES_PATH"
+    )
+    if [[ $mode == smoke ]]; then
+        hidden_state_args+=(
+            --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+            --on-missing generate
+            --on-generate delete
+            --force-generate
+            --on-generation-error raise
+        )
+    elif [[ $TRAINER_DATA_MODE == online-cache ]]; then
+        hidden_state_args+=(
+            --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+            --on-missing generate
+            --on-generate cache
+            --on-generation-error raise
+        )
+    else
+        hidden_state_args+=(--on-missing raise)
+    fi
+
     local cmd=(
         "$TORCHRUN_BIN"
         --nnodes "$NNODES"
@@ -467,13 +519,7 @@ run_trainer() {
         --from-pretrained "$MTP_DRAFT_PATH"
         --trust-remote-code
         --data-path "$effective_data"
-        --hidden-states-backend file
-        --hidden-states-path "$HIDDEN_STATES_PATH"
-        --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
-        --on-missing generate
-        --on-generate delete
-        --force-generate
-        --on-generation-error raise
+        "${hidden_state_args[@]}"
         --train-data-ratio "$TRAIN_DATA_RATIO"
         --save-path "$effective_output"
         --log-dir "$effective_log_root/metrics"

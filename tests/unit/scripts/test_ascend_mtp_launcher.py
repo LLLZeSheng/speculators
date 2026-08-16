@@ -70,7 +70,7 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15" in (
         result.stdout
     )
-    assert "/mnt/xds/dev/s00838505/GLM-5.2-w4a8c8" in result.stdout
+    assert "v1-ascend-modelslim-v4" in result.stdout
     assert "scripts/launch_vllm.py" in result.stdout
     assert "--target-layer-ids 78" in result.stdout
     assert "--hidden-states-path" in result.stdout
@@ -79,19 +79,22 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--tensor-parallel-size 8" in result.stdout
     assert "--max-model-len 8193" in result.stdout
     assert "--max-num-batched-tokens 8192" in result.stdout
-    assert "scripts/prepare_mixed_quant_model.py" in result.stdout
-    assert "--quantization ascend" not in result.stdout
+    assert "scripts/prepare_mixed_quant_model.py" not in result.stdout
+    assert "--quantization ascend" in result.stdout
     assert "--enable-expert-parallel" in result.stdout
     assert "--required-devices 16" in result.stdout
     assert "--served-model-name glm52-w4a8c8-verifier" in result.stdout
     assert "/kos_ulan/spec_train/metadata/glm52-w4a8c8" in result.stdout
 
 
-def test_verifier_can_still_select_modelslim_ascend_quantization():
-    result = _run("verifier", VERIFIER_QUANTIZATION_MODE="ascend")
+def test_verifier_can_still_select_compressed_tensors_normalization():
+    result = _run(
+        "verifier", VERIFIER_QUANTIZATION_MODE="compressed-tensors"
+    )
 
     assert result.returncode == 0, result.stderr
-    assert "--quantization ascend" in result.stdout
+    assert "scripts/prepare_mixed_quant_model.py" in result.stdout
+    assert "--quantization ascend" not in result.stdout
 
 
 def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
@@ -110,10 +113,23 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--hidden-states-dtype bfloat16" in result.stdout
     assert "--fsdp-shard" in result.stdout
     assert "--on-missing generate" in result.stdout
-    assert "--on-generate delete" in result.stdout
-    assert "--force-generate" in result.stdout
+    assert "--on-generate cache" in result.stdout
+    assert "--force-generate" not in result.stdout
     assert "--on-generation-error raise" in result.stdout
     assert "--checkpoint-steps 1000" in result.stdout
+
+
+def test_trainer_offline_mode_never_contacts_verifier():
+    result = _run("trainer", TRAINER_DATA_MODE="offline")
+
+    assert result.returncode == 0, result.stderr
+    train_command = next(
+        line for line in result.stdout.splitlines() if "scripts/train.py" in line
+    )
+    assert "--on-missing raise" in train_command
+    assert "--vllm-endpoint" not in train_command
+    assert "--on-generate" not in train_command
+    assert "--force-generate" not in train_command
 
 
 def test_verifier_preflight_uses_dp_times_tp_device_count():
