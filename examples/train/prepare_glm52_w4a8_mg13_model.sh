@@ -6,7 +6,7 @@ set -euo pipefail
 
 PYTHON_BIN=${PYTHON_BIN:-python}
 SOURCE_MODEL=${SOURCE_MODEL:-/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1}
-RUNTIME_MODEL=${RUNTIME_MODEL:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v3}
+RUNTIME_MODEL=${RUNTIME_MODEL:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -115,12 +115,17 @@ with open(index_candidates[0], encoding="utf-8") as handle:
 num_hidden_layers = int(config["num_hidden_layers"])
 num_mtp_layers = int(config.get("num_nextn_predict_layers", 0))
 mtp_end = num_hidden_layers + num_mtp_layers
-layer_pattern = re.compile(r"(?:^|\\.)layers\\.(\\d+)\\.")
+layer_pattern = re.compile(r"(?:^|\.)layers\.(\d+)\.")
 mtp_keys = []
 for name in weight_map:
     match = layer_pattern.search(name)
     if match and num_hidden_layers <= int(match.group(1)) < mtp_end:
         mtp_keys.append(name)
+if num_mtp_layers > 0 and not mtp_keys:
+    raise SystemExit(
+        f"expected {num_mtp_layers} MTP layer(s) after layer "
+        f"{num_hidden_layers - 1}, but no matching checkpoint keys were found"
+    )
 
 quant_aux_suffixes = (
     ".weight_scale",
