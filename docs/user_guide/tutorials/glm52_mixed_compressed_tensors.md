@@ -91,6 +91,62 @@ cat "$VERIFIER_MODEL_PATH/runtime_model_manifest.json"
 The manifest should report one or more MTP float entries. A manifest with
 `"mtp_float_entries_added": 0` is an obsolete pre-v4 view for this model.
 
+## Audit native MTP weight mapping
+
+Successful model construction proves only that ModelSlim accepted the layer
+description. It does not prove that the native MTP embedding, transformer
+block, and logits head received the intended checkpoint values. Run the static
+auditor inside the serving image:
+
+```bash
+cd /kos_ulan/spec_train/speculators
+python scripts/check_glm52_mtp_mapping.py \
+  /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
+  --check-values \
+  --json-output /tmp/glm52-mtp-mapping.json
+```
+
+The command checks:
+
+- `num_hidden_layers` and `num_nextn_predict_layers` against checkpoint keys;
+- all MTP `.weight` entries against `quant_model_description.json`;
+- representative checkpoint-to-runtime rewrites, including insertion of
+  `.mtp_block` for transformer parameters;
+- the layer-local `enorm`, `hnorm`, `eh_proj`, shared norm, embedding, and LM
+  head tensors;
+- representative tensor samples for finite, non-degenerate values; and
+- the installed vLLM-Ascend `patch_deepseek_mtp.py` for generic-loader or
+  explicit shared-weight handling.
+
+Pay special attention to:
+
+```text
+model.layers.78.embed_tokens.weight
+model.layers.78.shared_head.head.weight
+```
+
+Native MTP shares these parameters conceptually with the target model. If the
+layer-local copies are absent, the runtime loader must explicitly bind
+`model.embed_tokens.weight` and `lm_head.weight`. A static
+`PASS_WITH_WARNINGS` means the files are internally consistent but this
+runtime binding still needs confirmation. `FAIL` means the checkpoint or
+ModelSlim description is already inconsistent and serving should not be used
+for acceptance measurements.
+
+The final runtime evidence remains the server startup log. Check it with:
+
+```bash
+grep -Ei \
+  'MTP draft model loaded|MTP speculative decoding layer|Following weights were not initialized|shared_head|embed_tokens|layers\.78|missing|not loaded' \
+  SERVER_LOG | tail -500
+```
+
+An absence of errors is not sufficient on versions that validate only that at
+least one parameter from each MTP layer was loaded. The auditor deliberately
+reports the critical shared parameters separately for this reason. See the
+upstream GLM missing-shared-weight report:
+[vllm-project/vllm-ascend#6754](https://github.com/vllm-project/vllm-ascend/issues/6754).
+
 ## Related upstream work
 
 [vllm-project/vllm-ascend#5889](https://github.com/vllm-project/vllm-ascend/pull/5889)
