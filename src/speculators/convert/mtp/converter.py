@@ -162,6 +162,7 @@ class MTPConverter:
         if "text_config" in source_config:
             source_config = source_config["text_config"]
 
+        source_config = self._normalize_config_from_weights(source_config, weights)
         config = self._build_config(source_config, base_model, num_speculative_steps)
         saved_path = self._save(config, weights, output_path)
         logger.success(f"Saved to: {saved_path}")
@@ -188,6 +189,45 @@ class MTPConverter:
             f"No keys with prefix '{_MTP_PREFIX}' found. This converter "
             "requires a checkpoint with supported native MTP layers."
         )
+
+    @staticmethod
+    def _normalize_config_from_weights(
+        source_config: dict,
+        weights: dict[str, torch.Tensor],
+    ) -> dict:
+        """Repair architecture fields that disagree with native tensors.
+
+        Some GLM-5.2 configs read by Transformers 5.x expose
+        ``qk_rope_head_dim=192`` because of an attribute-map collision, while
+        the checkpoint uses the real value 64.  Infer the value from the MTP
+        KV-A projection (out = kv_lora_rank + qk_rope_head_dim) so conversion
+        remains correct for other GLM shapes as well.
+        """
+        normalized = dict(source_config)
+        if normalized.get("model_type") != "glm_moe_dsa":
+            return normalized
+
+        key = "mtp_layers.0.self_attn.kv_a_proj_with_mqa.weight"
+        tensor = weights.get(key)
+        kv_lora_rank = normalized.get("kv_lora_rank")
+        if tensor is None or not isinstance(kv_lora_rank, int):
+            return normalized
+
+        inferred = tensor.shape[0] - kv_lora_rank
+        if inferred <= 0:
+            raise ValueError(
+                f"Cannot infer qk_rope_head_dim from {key}: "
+                f"shape={tuple(tensor.shape)}, kv_lora_rank={kv_lora_rank}"
+            )
+
+        configured = normalized.get("qk_rope_head_dim")
+        if configured != inferred:
+            logger.warning(
+                "Repairing GLM qk_rope_head_dim from checkpoint shape: "
+                f"{configured} -> {inferred}"
+            )
+            normalized["qk_rope_head_dim"] = inferred
+        return normalized
 
     @staticmethod
     def _remap_key(key: str, source_prefix: str = _MTP_PREFIX) -> str:

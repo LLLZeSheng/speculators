@@ -134,6 +134,32 @@ class TestResolveMtpPrefix:
             MTPConverter._resolve_mtp_prefix(keys, config)
 
 
+class TestNormalizeConfigFromWeights:
+    def test_repairs_glm_rope_dimension_from_kv_projection(self):
+        config = {
+            "model_type": "glm_moe_dsa",
+            "kv_lora_rank": 512,
+            "qk_rope_head_dim": 192,
+        }
+        weights = {
+            "mtp_layers.0.self_attn.kv_a_proj_with_mqa.weight": torch.empty(
+                576, 6144
+            )
+        }
+
+        normalized = MTPConverter._normalize_config_from_weights(config, weights)
+
+        assert normalized["qk_rope_head_dim"] == 64
+        assert config["qk_rope_head_dim"] == 192
+
+    def test_leaves_non_glm_config_unchanged(self):
+        config = {"model_type": "qwen3", "qk_rope_head_dim": 192}
+
+        normalized = MTPConverter._normalize_config_from_weights(config, {})
+
+        assert normalized == config
+
+
 class TestModelSlimExtraction:
     def test_extracts_native_mtp_from_auxiliary_file(self, tmp_path):
         native_key = "model.layers.78.eh_proj.weight"
