@@ -38,7 +38,7 @@ VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-8}
 VERIFIER_DP_SIZE=${VERIFIER_DP_SIZE:-2}
 VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}
 VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-8}
-VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32768}
+VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32769}
 VERIFIER_GPU_MEMORY_UTILIZATION=${VERIFIER_GPU_MEMORY_UTILIZATION:-0.92}
 TARGET_LAYER_ID=${TARGET_LAYER_ID:-78}
 
@@ -189,8 +189,8 @@ validate_context_window() {
         fail "TOTAL_SEQ_LEN, VERIFIER_MAX_MODEL_LEN, and VERIFIER_MAX_BATCHED_TOKENS must be integers"
     ((input_length < VERIFIER_MAX_MODEL_LEN)) || \
         fail "VERIFIER_MAX_MODEL_LEN must exceed the online input length by at least 1"
-    ((input_length <= VERIFIER_MAX_BATCHED_TOKENS)) || \
-        fail "VERIFIER_MAX_BATCHED_TOKENS must cover TOTAL_SEQ_LEN because hidden-state extraction disables chunked prefill"
+    ((VERIFIER_MAX_MODEL_LEN <= VERIFIER_MAX_BATCHED_TOKENS)) || \
+        fail "VERIFIER_MAX_BATCHED_TOKENS must cover VERIFIER_MAX_MODEL_LEN because hidden-state extraction disables chunked prefill"
     [[ $REQUEST_TIMEOUT =~ ^[1-9][0-9]*$ ]] || \
         fail "REQUEST_TIMEOUT must be a positive integer"
     [[ $MAX_RETRIES =~ ^[0-9]+$ ]] || \

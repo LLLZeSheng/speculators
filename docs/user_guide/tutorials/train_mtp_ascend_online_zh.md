@@ -103,14 +103,15 @@ MANAGER_DRY_RUN=1 bash \
 ```yaml
 total_seq_len: 32768
 verifier_max_model_len: 32769
-verifier_max_batched_tokens: 32768
+verifier_max_batched_tokens: 32769
 verifier_max_num_seqs: 8
 request_timeout: 900
 max_retries: 3
 ```
 
 `32769` 为一次 hidden-state 请求额外保留 1 个生成 token。hidden-state
-launcher 会关闭 chunked prefill，因此 batched-token 预算不能小于输入长度。
+launcher 会关闭 chunked prefill，且 vLLM 要求 batched-token 预算不能小于
+模型最大长度，因此两者都设为 `32769`。
 每台 verifier 是 DP2 × TP8，满 32K 时实际约可同时 prefill 2 条；其余请求会
 排队。`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
 32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。

@@ -117,14 +117,14 @@ training dataset:              /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average
 repository:                    /kos_ulan/lzs/spec_train/speculators
 training context:              32768 tokens
 verifier model length:         32769 tokens
-verifier batched-token budget: 32768 tokens
+verifier batched-token budget: 32769 tokens
 online request timeout:        900 seconds
 ```
 
 The one-token difference between the training context and model length is
 intentional: hidden-state extraction sends one generation token. The launcher
-disables chunked prefill, so `VERIFIER_MAX_BATCHED_TOKENS` must be at least
-`TOTAL_SEQ_LEN`. With DP2, one verifier node can actively prefill about two
+disables chunked prefill, and vLLM requires `VERIFIER_MAX_BATCHED_TOKENS` to be
+at least `VERIFIER_MAX_MODEL_LEN`. With DP2, one verifier node can actively prefill about two
 full 32K samples at once; additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
 keeps capacity for shorter samples without claiming eight simultaneous 32K
 prefills.
@@ -193,7 +193,7 @@ verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 verifier_quantization_mode: ascend
 mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_max_model_len: 32769
-verifier_max_batched_tokens: 32768
+verifier_max_batched_tokens: 32769
 verifier_max_num_seqs: 8
 total_seq_len: 32768
 request_timeout: 900

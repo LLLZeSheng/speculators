@@ -226,9 +226,12 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
     if numbers["verifier_max_model_len"] <= numbers["total_seq_len"]:
         raise ValueError("verifier_max_model_len must exceed total_seq_len")
-    if numbers["verifier_max_batched_tokens"] < numbers["total_seq_len"]:
+    if (
+        numbers["verifier_max_batched_tokens"]
+        < numbers["verifier_max_model_len"]
+    ):
         raise ValueError(
-            "verifier_max_batched_tokens must be at least total_seq_len"
+            "verifier_max_batched_tokens must be at least verifier_max_model_len"
         )
     if config.get("trainer_mode") not in {"smoke", "trainer"}:
         raise ValueError("trainer_mode must be smoke or trainer")
