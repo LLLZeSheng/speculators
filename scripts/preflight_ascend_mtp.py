@@ -19,6 +19,7 @@ from typing import Any
 
 import torch
 from datasets import load_from_disk
+from packaging.version import InvalidVersion, Version
 from safetensors import safe_open
 
 
@@ -72,6 +73,14 @@ _GLM_MTP_NON_EXPERT_SUFFIXES = (
     "input_layernorm.weight",
     "post_attention_layernorm.weight",
 )
+
+
+def _same_public_version(installed: str, expected: str) -> bool:
+    """Compare releases while allowing wheel-local build labels such as +empty."""
+    try:
+        return Version(installed).public == Version(expected).public
+    except InvalidVersion:
+        return installed == expected
 
 
 def _load_model_config(model_path: str | Path) -> dict[str, Any]:
@@ -304,7 +313,7 @@ def validate_npu_runtime(
         ) from exc
 
     expected_torch_npu = _EXPECTED_VERSIONS["torch-npu"]
-    if torch_npu_version != expected_torch_npu:
+    if not _same_public_version(torch_npu_version, expected_torch_npu):
         raise PreflightError(
             f"torch-npu version mismatch: expected {expected_torch_npu}, "
             f"got {torch_npu_version}"
@@ -337,7 +346,7 @@ def validate_npu_runtime(
                     f"required package is missing: {distribution}"
                 ) from exc
             expected = _EXPECTED_VERSIONS[distribution]
-            if installed != expected:
+            if not _same_public_version(installed, expected):
                 raise PreflightError(
                     f"{distribution} version mismatch: expected {expected}, "
                     f"got {installed}"

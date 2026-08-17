@@ -361,6 +361,31 @@ def test_validate_npu_runtime_rejects_vllm_version_mismatch(monkeypatch):
         preflight.validate_npu_runtime(16, require_vllm=True)
 
 
+def test_validate_npu_runtime_accepts_local_vllm_build_label(monkeypatch):
+    versions = {
+        "torch-npu": "2.10.0.post2",
+        "vllm": "0.23.0+empty",
+        "vllm-ascend": "0.23.0rc1+a3",
+    }
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        versions.__getitem__,
+    )
+    monkeypatch.setattr(preflight.importlib, "import_module", lambda _name: object())
+    monkeypatch.setattr(
+        preflight.torch.accelerator,
+        "current_accelerator",
+        _fake_accelerator,
+    )
+    monkeypatch.setattr(preflight.torch.accelerator, "device_count", lambda: 16)
+
+    result = preflight.validate_npu_runtime(16, require_vllm=True)
+
+    assert result["vllm"] == "0.23.0+empty"
+    assert result["vllm-ascend"] == "0.23.0rc1+a3"
+
+
 def test_validate_endpoint_uses_health_url(monkeypatch):
     seen = []
 
