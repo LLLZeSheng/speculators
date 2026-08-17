@@ -37,6 +37,34 @@ def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
     assert '"enable_sparse_li_c8":true' in text
 
 
+def test_verifier_maps_local_ip_to_vllm_host_ip(tmp_path: Path):
+    environment = {
+        **os.environ,
+        "ROLE": "verifier",
+        "VERIFIER_ID": "2",
+        "DRY_RUN": "1",
+        "LOCAL_IP": "7.150.9.19",
+        "VERIFIER_QUANTIZATION_MODE": "ascend",
+        "MTP_INIT_MODEL_PATH": "/model",
+        "VERIFIER_MODEL_PATH": "/model",
+        "DATA_PATH": "/data",
+        "HIDDEN_STATES_PATH": "/hidden",
+        "VERIFIER_METADATA_PATH": str(tmp_path / "metadata"),
+        "LOG_ROOT": str(tmp_path / "logs"),
+        # Simulate a stale value inherited from a reused container.
+        "VLLM_HOST_IP": "7.150.8.73",
+    }
+    result = subprocess.run(
+        ["bash", str(LAUNCHER)],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "VLLM_HOST_IP=7.150.9.19" in result.stdout
+
+
 def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
     _write_user_yaml(config)
