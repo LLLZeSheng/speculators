@@ -92,6 +92,17 @@ load_config() {
     REMOTE_REPO_PATH=${REMOTE_REPO_PATH:-$DEFAULT_REPO}
     SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
     ORCHESTRATOR_LOG_ROOT=${ORCHESTRATOR_LOG_ROOT:-$SHARED_ROOT/spec_train/logs/orchestrator}
+    CONTAINER_MODE=${CONTAINER_MODE:-create}
+    EXISTING_CONTAINER_NAME=${EXISTING_CONTAINER_NAME:-}
+}
+
+container_for() {
+    local role=$1 index=$2
+    if [[ $CONTAINER_MODE == existing ]]; then
+        printf '%s' "$EXISTING_CONTAINER_NAME"
+    else
+        printf '%s-%s%s' "$CONTAINER_NAME_PREFIX" "$role" "$index"
+    fi
 }
 
 ssh_args() {
@@ -127,9 +138,10 @@ build_remote_command() {
 
 start_node() {
     local host=$1 role=$2 index=$3 mode=${4:-}
-    local container="$CONTAINER_NAME_PREFIX-$role$index"
+    local container
+    container=$(container_for "$role" "$index")
     local verifier_host=${CLUSTER_VERIFIER_IPS[$index]:-}
-    local host_log="$ORCHESTRATOR_LOG_ROOT/$container.host.log"
+    local host_log="$ORCHESTRATOR_LOG_ROOT/$CONTAINER_NAME_PREFIX-$role$index.host.log"
     local -a command=(
         env
         "NODE_IP=$host"
@@ -169,7 +181,8 @@ start_node() {
 
 run_preflight_node() {
     local host=$1 index=$2
-    local container="$CONTAINER_NAME_PREFIX-preflight$index"
+    local container
+    container=$(container_for preflight "$index")
     local -a command=(
         env "NODE_IP=$host" "LOCAL_IP=$host" NIC_NAME=auto ROLE=preflight
         "CONTAINER_NAME=$container"
@@ -225,13 +238,13 @@ show_role_status() {
     local index host container
     for index in "${!addresses[@]}"; do
         host=${addresses[$index]}
-        container="$CONTAINER_NAME_PREFIX-$role$index"
+        container=$(container_for "$role" "$index")
         printf '\n[status] host=%s container=%s\n' "$host" "$container"
         local status_command
         status_command="docker ps -a --filter name=^/$(quote "$container")\$ "
         status_command+="--format '{{.Names}} {{.Status}}'; "
         status_command+="tail -n 8 "
-        status_command+="$(quote "$ORCHESTRATOR_LOG_ROOT/$container.host.log") "
+        status_command+="$(quote "$ORCHESTRATOR_LOG_ROOT/$CONTAINER_NAME_PREFIX-$role$index.host.log") "
         status_command+="2>/dev/null || true"
         remote "$host" "$status_command" || true
     done
@@ -249,10 +262,18 @@ stop_role() {
     local index host container
     for index in "${!addresses[@]}"; do
         host=${addresses[$index]}
-        container="$CONTAINER_NAME_PREFIX-$role$index"
+        container=$(container_for "$role" "$index")
         printf '[stop] host=%s container=%s\n' "$host" "$container"
-        remote "$host" \
-            "docker stop -t 30 $(quote "$container") >/dev/null 2>&1 || true" || true
+        if [[ $CONTAINER_MODE == existing ]]; then
+            local pid_file="$LOG_ROOT/runtime_pids/$container.$role$index.pid"
+            local stop_command
+            stop_command="docker exec $(quote "$container") bash -lc "
+            stop_command+=$(quote "if [[ -f $pid_file ]]; then pid=\$(cat $pid_file); kill -TERM \"\$pid\" 2>/dev/null || true; fi")
+            remote "$host" "$stop_command" || true
+        else
+            remote "$host" \
+                "docker stop -t 30 $(quote "$container") >/dev/null 2>&1 || true" || true
+        fi
     done
 }
 
@@ -274,6 +295,7 @@ case "$COMMAND" in
         printf 'CONFIG_STATUS=valid\nCONFIG_FILE=%s\n' "$CONFIG_FILE"
         printf 'VERIFIERS=%s\nTRAINERS=%s\n' \
             "${#CLUSTER_VERIFIER_IPS[@]}" "${#CLUSTER_TRAINER_IPS[@]}"
+        printf 'CONTAINER_MODE=%s\n' "$CONTAINER_MODE"
         ;;
     preflight)
         index=0

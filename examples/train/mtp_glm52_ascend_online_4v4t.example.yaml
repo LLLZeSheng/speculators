@@ -15,11 +15,23 @@ trainer_ips:
   - FILL_TRAINER_3_IP
 
 container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_mode: create
+# In existing mode the same container name may be reused on every host.
+existing_container_name: glm52-w4a8-mg13-speculator-training
 container_name_prefix: glm52-online-mtp3
 container_repo_path: /workspace/speculators
+container_shm_size: 1g
 repo_path: /kos_ulan/spec_train/speculators
 shared_root: /kos_ulan
 nic_name: auto
+
+# Used only when container_mode=create. Add more host:container[:ro|rw] entries
+# here as needed. Paths are not inferred or rewritten by the manager.
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /kos_ulan:/kos_ulan
+  - /kos_ulan/spec_train/speculators:/workspace/speculators
+  - /root/.cache:/root/.cache
 
 verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1

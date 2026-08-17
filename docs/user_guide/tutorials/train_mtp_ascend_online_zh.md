@@ -61,11 +61,12 @@ vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 
 - `verifier_ips` 中四台 verifier 的 IP；
 - `trainer_ips` 中四台 trainer 的 IP；
-- `container_image` 和 `container_name_prefix`；
+- `container_mode`、容器名称、镜像和挂载列表；
 - 代码、模型、数据、hidden states、checkpoint 和日志路径；
 - 所有 `FILL_*` 占位值必须被替换；
-- 最终容器名会自动成为 `glm52-online-mtp3-verifier0`、
-  `glm52-online-mtp3-trainer0` 等。
+- `create` 模式的容器名会自动成为 `glm52-online-mtp3-verifier0`、
+  `glm52-online-mtp3-trainer0` 等；`existing` 模式复用
+  `existing_container_name`。
 
 建议配置文件放在：
 
@@ -118,11 +119,49 @@ YAML 同时明确记录容器行为：
 
 ```yaml
 container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_mode: create
+existing_container_name: glm52-w4a8-mg13-speculator-training
 container_name_prefix: glm52-online-mtp3
 container_repo_path: /workspace/speculators
+container_shm_size: 1g
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /kos_ulan:/kos_ulan
+  - /kos_ulan/spec_train/speculators:/workspace/speculators
+  - /root/.cache:/root/.cache
 install_speculators_verifier: false
 install_speculators_trainer: true
 ```
+
+`container_mode: create` 使用 `docker run` 创建容器，参数与标准 A3
+启动方式对齐：host 网络、1 GiB shm、16 张 NPU、管理设备、Ascend 驱动、
+`/mnt/xds/sfs`、`/kos_ulan` 和 `/root/.cache`。需要额外挂载目录时，直接在
+`container_mounts` 追加 `宿主机路径:容器路径[:ro|rw]`。管理任务通过
+nohup 后台执行，因此不会加入只能在交互终端使用的 `-it`。
+
+如果八台机器上已经提前创建好同名容器，使用：
+
+```yaml
+container_mode: existing
+existing_container_name: glm52-w4a8-mg13-speculator-training
+```
+
+此时管理器通过 `docker exec` 运行任务，`container_image`、
+`container_shm_size` 和 `container_mounts` 不会重新应用；这些必须在原容器
+创建时已经设置正确。`stop` 只根据 PID 文件停止本次 MTP 任务，不会执行
+`docker stop`，因此不会关闭或删除已有容器。
+
+如果已有容器正是用本文开头那种只挂载 `/kos_ulan:/kos_ulan` 的命令创建，
+容器内并不存在 `/workspace/speculators` 映射。这时应把 YAML 改为实际可见
+的代码目录，例如：
+
+```yaml
+repo_path: /kos_ulan/lzs/spec_train/speculators
+container_repo_path: /kos_ulan/lzs/spec_train/speculators
+```
+
+`create` 模式不带 `--rm`，与给出的手工命令一致。停止后的同名容器仍会
+保留；再次创建前需要人工确认并删除旧容器，或者切换到 `existing` 模式。
 
 ### 容器内实际执行什么
 

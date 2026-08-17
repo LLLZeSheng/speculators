@@ -48,6 +48,9 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     assert "verifier_max_batched_tokens: 32768" in text
     assert "total_seq_len: 32768" in text
     assert "request_timeout: 900" in text
+    assert "container_mode: create" in text
+    assert "- /mnt/xds/sfs:/mnt/xds/sfs" in text
+    assert "- /root/.cache:/root/.cache" in text
     assert "install_speculators_verifier: false" in text
     assert "install_speculators_trainer: true" in text
 
@@ -84,6 +87,29 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
         env=environment,
     )
     assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
+
+
+def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    text = config.read_text(encoding="utf-8").replace(
+        "container_mode: create", "container_mode: existing"
+    )
+    config.write_text(text, encoding="utf-8")
+    environment = {**os.environ, "MANAGER_DRY_RUN": "1"}
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "start-verifiers", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.stdout.count(
+        "CONTAINER_NAME=glm52-w4a8-mg13-speculator-training"
+    ) == 4
+    assert "test-mtp-verifier0.host.log" in result.stdout
 
 
 def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
@@ -147,6 +173,8 @@ def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
     )
     assert "[network] LOCAL_IP=10.0.0.7 NIC_NAME=eth-test" in result.stdout
     assert "NIC_NAME=eth-test" in result.stdout
+    assert "--net host" in result.stdout
+    assert "--shm-size 1g" in result.stdout
 
 
 def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
@@ -175,5 +203,32 @@ def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
         capture_output=True,
         text=True,
     )
-    assert "pip\\ install\\ --no-deps" in trainer.stdout
-    assert "/hs_connectors" in trainer.stdout
+    assert "INSTALL_SPECULATORS=1" in trainer.stdout
+    assert "run_mtp_glm52_ascend_online_job.sh" in trainer.stdout
+
+
+def test_yaml_wrapper_uses_docker_exec_for_existing_container(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "container_mode: create", "container_mode: existing"
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(WRAPPER), str(config)],
+        env={
+            **os.environ,
+            "DRY_RUN": "1",
+            "NIC_NAME": "eth0",
+            "NODE_IP": "10.0.0.1",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "[container-existing] docker exec" in result.stdout
+    assert "glm52-w4a8-mg13-speculator-training" in result.stdout
+    assert "docker run" not in result.stdout

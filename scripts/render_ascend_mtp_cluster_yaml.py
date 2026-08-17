@@ -17,8 +17,11 @@ from pathlib import Path
 
 SCALAR_MAP = {
     "container_image": "IMAGE",
+    "container_mode": "CONTAINER_MODE",
+    "existing_container_name": "EXISTING_CONTAINER_NAME",
     "container_name_prefix": "CONTAINER_NAME_PREFIX",
     "container_repo_path": "CONTAINER_REPO_PATH",
+    "container_shm_size": "CONTAINER_SHM_SIZE",
     "repo_path": "REMOTE_REPO_PATH",
     "shared_root": "SHARED_ROOT",
     "nic_name": "NIC_NAME",
@@ -113,9 +116,13 @@ def boolean_as_flag(value: str, key: str) -> str:
 
 
 def validate(config: dict[str, str | list[str]]) -> None:
-    allowed = {"version", "cluster_name", "verifier_ips", "trainer_ips"} | set(
-        SCALAR_MAP
-    )
+    allowed = {
+        "version",
+        "cluster_name",
+        "verifier_ips",
+        "trainer_ips",
+        "container_mounts",
+    } | set(SCALAR_MAP)
     unknown = sorted(set(config) - allowed)
     if unknown:
         raise ValueError(f"unknown YAML keys: {unknown}")
@@ -130,8 +137,11 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError("all verifier and trainer addresses must be unique")
     required_scalars = (
         "container_image",
+        "container_mode",
+        "existing_container_name",
         "container_name_prefix",
         "container_repo_path",
+        "container_shm_size",
         "repo_path",
         "shared_root",
         "nic_name",
@@ -160,6 +170,34 @@ def validate(config: dict[str, str | list[str]]) -> None:
     assert isinstance(prefix, str)
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", prefix) is None:
         raise ValueError("container_name_prefix is not a valid Docker name prefix")
+    if config.get("container_mode") not in {"create", "existing"}:
+        raise ValueError("container_mode must be create or existing")
+    existing_name = config["existing_container_name"]
+    assert isinstance(existing_name, str)
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", existing_name) is None:
+        raise ValueError("existing_container_name is not a valid Docker name")
+    mounts = config.get("container_mounts")
+    if not isinstance(mounts, list) or not mounts:
+        raise ValueError("container_mounts must contain at least one mount")
+    for mount in mounts:
+        parts = mount.split(":", 2)
+        if (
+            len(parts) < 2
+            or not parts[0].startswith("/")
+            or not parts[1].startswith("/")
+        ):
+            raise ValueError(
+                "container_mounts entries must use host_path:container_path[:options]"
+            )
+    if config.get("container_mode") == "create":
+        repo_mount = f"{config['repo_path']}:{config['container_repo_path']}"
+        if not any(
+            mount == repo_mount or mount.startswith(repo_mount + ":")
+            for mount in mounts
+        ):
+            raise ValueError(
+                "container_mounts must map repo_path to container_repo_path"
+            )
 
     integer_keys = (
         "verifier_port",
@@ -211,6 +249,7 @@ def render(config: dict[str, str | list[str]]) -> str:
     for yaml_key, shell_key in (
         ("verifier_ips", "CLUSTER_VERIFIER_IPS"),
         ("trainer_ips", "CLUSTER_TRAINER_IPS"),
+        ("container_mounts", "CONTAINER_MOUNTS"),
     ):
         values = config[yaml_key]
         assert isinstance(values, list)

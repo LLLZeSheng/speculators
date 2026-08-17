@@ -38,7 +38,10 @@ fi
 ROLE=${ROLE:-}
 TRAINER_MODE=${TRAINER_MODE:-smoke}
 IMAGE=${IMAGE:-quay.io/ascend/vllm-ascend:v0.23.0rc1-a3}
+CONTAINER_MODE=${CONTAINER_MODE:-create}
+EXISTING_CONTAINER_NAME=${EXISTING_CONTAINER_NAME:-}
 CONTAINER_REPO_PATH=${CONTAINER_REPO_PATH:-/workspace/speculators}
+CONTAINER_SHM_SIZE=${CONTAINER_SHM_SIZE:-1g}
 SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
 VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4}
 VERIFIER_SOURCE_MODEL_PATH=${VERIFIER_SOURCE_MODEL_PATH:-}
@@ -103,6 +106,11 @@ resolve_cluster_role() {
 
 resolve_cluster_role
 CONTAINER_NAME=${CONTAINER_NAME:-${CONTAINER_NAME_PREFIX:-glm52-mtp3}-${ROLE}${VERIFIER_ID:-${NODE_RANK:-0}}}
+if [[ $CONTAINER_MODE == existing ]]; then
+    [[ -n $EXISTING_CONTAINER_NAME ]] || \
+        fail "EXISTING_CONTAINER_NAME is required in existing mode"
+    CONTAINER_NAME=$EXISTING_CONTAINER_NAME
+fi
 
 resolve_nic_name() {
     if [[ $NIC_NAME != auto ]]; then
@@ -147,6 +155,10 @@ case "$INSTALL_SPECULATORS" in
     0 | 1) ;;
     *) fail "INSTALL_SPECULATORS must resolve to 0 or 1" ;;
 esac
+case "$CONTAINER_MODE" in
+    create | existing) ;;
+    *) fail "CONTAINER_MODE must be create or existing" ;;
+esac
 
 if [[ -n $CONFIG_FILE ]]; then
     for value in "$NIC_NAME" "$MTP_INIT_MODEL_PATH" "$DATA_PATH"; do
@@ -168,15 +180,55 @@ if [[ $DRY_RUN != 1 ]]; then
     fi
 fi
 
+if ! array_is_declared CONTAINER_MOUNTS; then
+    CONTAINER_MOUNTS=(
+        "$SHARED_ROOT:$SHARED_ROOT"
+        "$REPO_HOST_PATH:$CONTAINER_REPO_PATH"
+    )
+    [[ ! -e /mnt/xds/sfs ]] || CONTAINER_MOUNTS+=(/mnt/xds/sfs:/mnt/xds/sfs)
+    [[ ! -e /root/.cache ]] || CONTAINER_MOUNTS+=(/root/.cache:/root/.cache)
+fi
+
+forward_vars=(
+    ROLE DRY_RUN SHARED_ROOT VERIFIER_MODEL_PATH VERIFIER_SOURCE_MODEL_PATH MTP_INIT_MODEL_PATH DATA_PATH
+    HIDDEN_STATES_PATH MTP_DRAFT_PATH OUTPUT_PATH LOG_ROOT VERIFIER_METADATA_PATH
+    VERIFIER_RUNTIME_ROOT VERIFIER_QUANTIZATION_MODE CONTAINER_REPO_PATH
+    CONTAINER_NAME INSTALL_SPECULATORS
+    SERVED_MODEL_NAME VERIFIER_HOST VERIFIER_ID VERIFIER_BIND_HOST VERIFIER_PORT
+    VERIFIER_TP_SIZE VERIFIER_DP_SIZE VERIFIER_MAX_MODEL_LEN
+    VERIFIER_MAX_NUM_SEQS VERIFIER_MAX_BATCHED_TOKENS
+    VERIFIER_GPU_MEMORY_UTILIZATION TARGET_LAYER_ID NNODES NPROC_PER_NODE
+    NODE_RANK MASTER_ADDR MASTER_PORT LOCAL_IP NIC_NAME RUN_ID TOTAL_SEQ_LEN
+    EPOCHS LR WEIGHT_DECAY STEP_WEIGHT_BETA CHECKPOINT_STEPS TRAIN_DATA_RATIO
+    NUM_WORKERS PREFETCH_FACTOR REQUEST_TIMEOUT MAX_RETRIES MAX_STEPS RUN_NAME TRAINER_DATA_MODE SMOKE_SAMPLES SMOKE_RUN_ID
+    SMOKE_DATA_PATH MTP_PREPARE_TIMEOUT ASCEND_DEVICES EXPECTED_TORCH_NPU_VERSION
+    EXPECTED_VLLM_VERSION EXPECTED_VLLM_ASCEND_VERSION
+)
+
+inner=(bash "$CONTAINER_REPO_PATH/examples/train/run_mtp_glm52_ascend_online_job.sh")
+
+if [[ $CONTAINER_MODE == existing ]]; then
+    docker_args=(exec)
+    for name in "${forward_vars[@]}"; do
+        [[ -v $name ]] && docker_args+=(-e "$name=${!name}")
+    done
+    docker_args+=("$CONTAINER_NAME")
+    printf '[container-existing]'
+    printf ' %q' docker "${docker_args[@]}" "${inner[@]}"
+    printf '\n'
+    if [[ $DRY_RUN != 1 ]]; then
+        docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | \
+            grep -qx true || fail "existing container is not running: $CONTAINER_NAME"
+        exec docker "${docker_args[@]}" "${inner[@]}"
+    fi
+    exit 0
+fi
+
 docker_args=(
-    run --rm
+    run
     --name "$CONTAINER_NAME"
-    --network host
-    --ipc host
-    --ulimit memlock=-1
-    --cap-add SYS_NICE
-    -v "$SHARED_ROOT:$SHARED_ROOT"
-    -v "$REPO_HOST_PATH:$CONTAINER_REPO_PATH"
+    --net host
+    --shm-size "$CONTAINER_SHM_SIZE"
 )
 
 for device in /dev/davinci{0..15} /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
@@ -195,43 +247,22 @@ driver_mounts=(
     /etc/ascend_install.info
 )
 for path in "${driver_mounts[@]}"; do
-    [[ -e $path ]] && docker_args+=(-v "$path:$path:ro")
+    [[ -e $path ]] && docker_args+=(-v "$path:$path")
 done
 
-if [[ -d $VERIFIER_MODEL_PATH ]]; then
-    docker_args+=(-v "$VERIFIER_MODEL_PATH:$VERIFIER_MODEL_PATH:ro")
-fi
-if [[ -n $VERIFIER_SOURCE_MODEL_PATH && -d $VERIFIER_SOURCE_MODEL_PATH ]]; then
-    docker_args+=(-v "$VERIFIER_SOURCE_MODEL_PATH:$VERIFIER_SOURCE_MODEL_PATH:ro")
-fi
+for mount in "${CONTAINER_MOUNTS[@]}"; do
+    host_path=${mount%%:*}
+    if [[ $DRY_RUN != 1 && ! -e $host_path ]]; then
+        fail "container mount source is missing: $host_path"
+    fi
+    docker_args+=(-v "$mount")
+done
 
-forward_vars=(
-    ROLE DRY_RUN SHARED_ROOT VERIFIER_MODEL_PATH VERIFIER_SOURCE_MODEL_PATH MTP_INIT_MODEL_PATH DATA_PATH
-    HIDDEN_STATES_PATH MTP_DRAFT_PATH OUTPUT_PATH LOG_ROOT VERIFIER_METADATA_PATH
-    VERIFIER_RUNTIME_ROOT VERIFIER_QUANTIZATION_MODE
-    SERVED_MODEL_NAME VERIFIER_HOST VERIFIER_ID VERIFIER_BIND_HOST VERIFIER_PORT
-    VERIFIER_TP_SIZE VERIFIER_DP_SIZE VERIFIER_MAX_MODEL_LEN
-    VERIFIER_MAX_NUM_SEQS VERIFIER_MAX_BATCHED_TOKENS
-    VERIFIER_GPU_MEMORY_UTILIZATION TARGET_LAYER_ID NNODES NPROC_PER_NODE
-    NODE_RANK MASTER_ADDR MASTER_PORT LOCAL_IP NIC_NAME RUN_ID TOTAL_SEQ_LEN
-    EPOCHS LR WEIGHT_DECAY STEP_WEIGHT_BETA CHECKPOINT_STEPS TRAIN_DATA_RATIO
-    NUM_WORKERS PREFETCH_FACTOR REQUEST_TIMEOUT MAX_RETRIES MAX_STEPS RUN_NAME TRAINER_DATA_MODE SMOKE_SAMPLES SMOKE_RUN_ID
-    SMOKE_DATA_PATH MTP_PREPARE_TIMEOUT ASCEND_DEVICES EXPECTED_TORCH_NPU_VERSION
-    EXPECTED_VLLM_VERSION EXPECTED_VLLM_ASCEND_VERSION
-)
 for name in "${forward_vars[@]}"; do
     [[ -v $name ]] && docker_args+=(-e "$name=${!name}")
 done
 
-inner=(bash "$CONTAINER_REPO_PATH/examples/train/mtp_glm52_ascend_online.sh")
-if [[ $INSTALL_SPECULATORS == 1 ]]; then
-    inner=(
-        bash -lc
-        "python -m pip install --no-deps -e '$CONTAINER_REPO_PATH/hs_connectors' -e '$CONTAINER_REPO_PATH' && exec bash '$CONTAINER_REPO_PATH/examples/train/mtp_glm52_ascend_online.sh'"
-    )
-fi
-
-printf '[container]'
+printf '[container-create]'
 printf ' %q' docker "${docker_args[@]}" "$IMAGE" "${inner[@]}"
 printf '\n'
 if [[ $DRY_RUN != 1 ]]; then

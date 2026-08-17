@@ -65,8 +65,39 @@ The shared configuration is:
 ```
 
 It explicitly contains the four verifier IPs, four trainer IPs, image,
-container prefix, container mount path, repository, model/data/output paths,
+container mode, container mounts, repository, model/data/output paths,
 32K sizing, and per-role installation policy. Replace every `FILL_*` value.
+
+Choose one container lifecycle mode:
+
+```yaml
+container_mode: create
+existing_container_name: glm52-w4a8-mg13-speculator-training
+container_shm_size: 1g
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /kos_ulan:/kos_ulan
+  - /kos_ulan/spec_train/speculators:/workspace/speculators
+  - /root/.cache:/root/.cache
+```
+
+`create` runs the configured image with host networking, 1 GiB shared memory,
+all 16 NPUs, Ascend driver files, and the YAML mount list. Add arbitrary
+`host_path:container_path[:ro|rw]` entries to that list. The manager runs under
+nohup, so it intentionally omits terminal-only `-it`.
+
+Set `container_mode: existing` to reuse one already-running container with the
+configured `existing_container_name` on every host. In this mode the wrapper
+uses `docker exec`; image, shm, device, and mount settings must already be
+correct on that container. The manager's `stop` command terminates only the
+tracked MTP process and never stops or removes the reused container.
+
+If a pre-created container mounts only `/kos_ulan:/kos_ulan` and therefore has
+no `/workspace/speculators`, set both `repo_path` and `container_repo_path` to
+the repository path visible through `/kos_ulan`, for example
+`/kos_ulan/lzs/spec_train/speculators`. Create mode intentionally omits
+`--rm`; remove a stopped same-name container manually before recreating it, or
+switch to existing mode.
 
 Validate it locally before any SSH or Docker operation:
 
