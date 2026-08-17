@@ -361,12 +361,16 @@ Verifier logs:
 
 Verifier startup automatically runs
 `scripts/patch_vllm_glm52_final_hidden_state.py` and
-`scripts/patch_vllm_ascend_hidden_state_cache.py`. In vLLM 0.23 the
+`scripts/patch_vllm_ascend_hidden_state_cache.py`, plus
+`scripts/patch_vllm_hidden_state_enolck.py`. In vLLM 0.23 the
 DeepSeek/GLM forward path samples auxiliary states before decoder blocks
 (`0..77`), while MTP layer id `78` denotes the final normalized output after
 the last block. The second patch prevents Ascend's MLA merge path from treating
 `HiddenStateCacheSpec` as a quantized cache carrying `scale_dim`. These patches change neither model
-weights nor model configuration and is idempotent. The original source is
+weights nor model configuration and are idempotent. The ENOLCK patch handles
+shared filesystems that reject `flock`: it synchronously finishes each hidden-
+state file before returning its path, instead of killing EngineCore or exposing
+an incomplete safetensors file. The original source is
 backed up as `deepseek_v2.py.before-glm-final-aux-hidden-state-fix`. To inspect
 or restore it manually:
 
@@ -375,6 +379,8 @@ python scripts/patch_vllm_glm52_final_hidden_state.py --check
 python scripts/patch_vllm_glm52_final_hidden_state.py --restore
 python scripts/patch_vllm_ascend_hidden_state_cache.py --check
 python scripts/patch_vllm_ascend_hidden_state_cache.py --restore
+python scripts/patch_vllm_hidden_state_enolck.py --check
+python scripts/patch_vllm_hidden_state_enolck.py --restore
 ```
 
 Trainer logs and checkpoints:

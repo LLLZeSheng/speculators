@@ -382,6 +382,8 @@ run_verifier() {
         "$REPO_ROOT/scripts/patch_vllm_glm52_final_hidden_state.py"
     run_cmd "$PYTHON_BIN" \
         "$REPO_ROOT/scripts/patch_vllm_ascend_hidden_state_cache.py"
+    run_cmd "$PYTHON_BIN" \
+        "$REPO_ROOT/scripts/patch_vllm_hidden_state_enolck.py"
     prepare_verifier_runtime_model
     publish_verifier_metadata
     local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"

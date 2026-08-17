@@ -401,6 +401,17 @@ hidden states，不会构造或加载原生 MTP drafter 的共享 embedding/head
 
 ## 10. 成功标准与恢复规则
 
+verifier 启动时会自动应用 `scripts/patch_vllm_hidden_state_enolck.py`。
+当 `/kos_ulan` 等共享文件系统不支持 `flock` 并返回 `Errno 37` 时，该补丁会
+改为同步写完 hidden-state safetensors 后再返回路径。这样既不会使 EngineCore
+崩溃，也不会让 trainer 读到未写完整的文件。补丁不修改模型权重或 config，
+并且可以用以下命令检查或恢复：
+
+```bash
+python scripts/patch_vllm_hidden_state_enolck.py --check
+python scripts/patch_vllm_hidden_state_enolck.py --restore
+```
+
 成功标准：
 
 - loss 为有限值；
