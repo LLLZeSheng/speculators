@@ -37,6 +37,7 @@ Options:
 Runtime environment overrides:
   SSH_USER=root SSH_PORT=22 SSH_IDENTITY_FILE=/path/to/key
   SSH_STRICT_HOST_KEY_CHECKING=accept-new HEALTH_TIMEOUT=7200
+  STOP_GRACE_SECONDS=15  # existing-mode job grace before container restart
   MANAGER_DRY_RUN=1  # print remote SSH commands without executing them
 
 Copy and edit examples/train/mtp_glm52_ascend_online_4v4t.example.yaml; this
@@ -263,6 +264,9 @@ stop_role() {
     local role=$1
     local -n addresses=$2
     local index host container
+    local stop_grace=${STOP_GRACE_SECONDS:-15}
+    [[ $stop_grace =~ ^[0-9]+$ ]] || \
+        fail "STOP_GRACE_SECONDS must be a non-negative integer"
     for index in "${!addresses[@]}"; do
         host=${addresses[$index]}
         container=$(container_for "$role" "$index")
@@ -271,7 +275,7 @@ stop_role() {
             local pid_file="$LOG_ROOT/runtime_pids/$container.$role$index.pid"
             local stop_command
             stop_command="docker exec $(quote "$container") bash -lc "
-            stop_command+=$(quote "if [[ -f $pid_file ]]; then pid=\$(cat $pid_file); if [[ \$pid =~ ^[0-9]+$ ]] && kill -0 \"\$pid\" 2>/dev/null; then kill -TERM \"\$pid\"; for ((i=0; i<180; i++)); do kill -0 \"\$pid\" 2>/dev/null || break; sleep 1; done; if kill -0 \"\$pid\" 2>/dev/null; then echo 'ERROR: job did not stop within 180 seconds: pid='\"\$pid\" >&2; exit 1; fi; fi; rm -f -- $pid_file; fi")
+            stop_command+=$(quote "if [[ -f $pid_file ]]; then pid=\$(cat $pid_file); if [[ \$pid =~ ^[0-9]+$ ]] && kill -0 \"\$pid\" 2>/dev/null; then kill -TERM \"\$pid\"; for ((i=0; i<$stop_grace; i++)); do kill -0 \"\$pid\" 2>/dev/null || break; sleep 1; done; if kill -0 \"\$pid\" 2>/dev/null; then echo 'WARNING: job still running after $stop_grace seconds; container restart will clean it: pid='\"\$pid\" >&2; fi; fi; rm -f -- $pid_file; fi")
             if ! remote "$host" "$stop_command"; then
                 printf 'WARNING: graceful stop did not complete: host=%s container=%s\n' \
                     "$host" "$container" >&2

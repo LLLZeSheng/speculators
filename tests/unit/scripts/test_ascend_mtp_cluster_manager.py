@@ -204,6 +204,8 @@ def test_manager_can_restart_existing_roles_independently(tmp_path: Path):
     assert trainers.stdout.count("[restart]") == 4
     assert "host=10.0.1.1" in trainers.stdout
     assert "host=10.0.0.1" not in trainers.stdout
+    assert "180" not in trainers.stdout
+    assert "15" in trainers.stdout
 
 
 def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):

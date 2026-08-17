@@ -96,6 +96,9 @@ tracked MTP processes and then runs `docker restart -t 30` once for the reused
 container on each of the eight hosts. It never removes the reused containers.
 This clears stale NPU workers and process-local state; services unrelated to
 this workflow must therefore not share those containers.
+The PID receives SIGTERM first, but the manager waits only 15 seconds by
+default because the following container restart is the final cleanup boundary.
+Override this with `STOP_GRACE_SECONDS=N` when a job needs a different grace.
 
 For role-scoped cleanup in `existing` mode, use `restart-verifiers` to stop
 only verifier jobs and restart the four verifier containers, or

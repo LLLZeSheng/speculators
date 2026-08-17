@@ -172,6 +172,8 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 记录的 verifier、trainer 和 smoke 任务，然后在八台机器上分别对复用容器
 执行一次 `docker restart -t 30`。容器不会被删除，但其中残留的 NPU worker
 和进程内状态会被清理。因此不要让与本训练无关的服务共用这些容器。
+manager 会先向任务 PID 发送 SIGTERM，但默认只等待 15 秒，因为紧随其后的
+容器重启才是最终清理边界；可通过 `STOP_GRACE_SECONDS=N` 调整等待时间。
 
 `existing` 模式还支持按角色清理：`restart-verifiers` 只停止 verifier 任务并
 重启四个 verifier 容器；`restart-trainers` 同时停止 trainer/smoke 任务，但
