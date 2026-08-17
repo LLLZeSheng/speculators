@@ -171,6 +171,41 @@ def test_manager_stop_restarts_each_existing_container_once(tmp_path: Path):
     assert result.stdout.count("docker\\ restart") == 8
 
 
+def test_manager_can_restart_existing_roles_independently(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    text = config.read_text(encoding="utf-8").replace(
+        "container_mode: create",
+        "container_mode: existing\nexisting_container_name: existing-test-container",
+    )
+    config.write_text(text, encoding="utf-8")
+    environment = {**os.environ, "MANAGER_DRY_RUN": "1"}
+
+    verifiers = subprocess.run(
+        ["bash", str(MANAGER), "restart-verifiers", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert verifiers.stdout.count("[stop]") == 4
+    assert verifiers.stdout.count("[restart]") == 4
+    assert "host=10.0.0.1" in verifiers.stdout
+    assert "host=10.0.1.1" not in verifiers.stdout
+
+    trainers = subprocess.run(
+        ["bash", str(MANAGER), "restart-trainers", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert trainers.stdout.count("[stop]") == 8
+    assert trainers.stdout.count("[restart]") == 4
+    assert "host=10.0.1.1" in trainers.stdout
+    assert "host=10.0.0.1" not in trainers.stdout
+
+
 def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
     _write_user_yaml(config)

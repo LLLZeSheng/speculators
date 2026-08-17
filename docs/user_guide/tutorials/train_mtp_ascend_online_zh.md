@@ -173,6 +173,11 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 执行一次 `docker restart -t 30`。容器不会被删除，但其中残留的 NPU worker
 和进程内状态会被清理。因此不要让与本训练无关的服务共用这些容器。
 
+`existing` 模式还支持按角色清理：`restart-verifiers` 只停止 verifier 任务并
+重启四个 verifier 容器；`restart-trainers` 同时停止 trainer/smoke 任务，但
+只对四个共用的 trainer 容器各重启一次。执行 `restart-verifiers` 后需要再次
+运行 `start-verifiers` 才会重新加载模型。
+
 ### 容器内实际执行什么
 
 不需要人工进入任何容器操作：

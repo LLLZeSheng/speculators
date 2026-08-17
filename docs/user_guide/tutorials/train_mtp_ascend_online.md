@@ -97,6 +97,12 @@ container on each of the eight hosts. It never removes the reused containers.
 This clears stale NPU workers and process-local state; services unrelated to
 this workflow must therefore not share those containers.
 
+For role-scoped cleanup in `existing` mode, use `restart-verifiers` to stop
+only verifier jobs and restart the four verifier containers, or
+`restart-trainers` to stop both trainer and smoke jobs and restart the four
+trainer containers. The latter restarts each shared trainer container only
+once. After `restart-verifiers`, run `start-verifiers` again to load the model.
+
 If a pre-created container mounts only `/kos_ulan:/kos_ulan` and therefore has
 no `/workspace/speculators`, set both `repo_path` and `container_repo_path` to
 the repository path visible through `/kos_ulan`, for example

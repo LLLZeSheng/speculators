@@ -25,6 +25,9 @@ Commands:
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
   status           Show matching containers and recent host-wrapper logs.
+  restart-verifiers
+                   Stop verifier jobs and restart only reused verifier containers.
+  restart-trainers Stop trainer/smoke jobs and restart only reused trainer containers.
   stop             Stop cluster jobs; restart reused containers in existing mode.
 
 Options:
@@ -280,33 +283,41 @@ stop_role() {
     done
 }
 
-restart_existing_containers() {
-    [[ $CONTAINER_MODE == existing ]] || return 0
+restart_existing_role() {
+    local role=$1
+    local -n addresses=$2
+    [[ $CONTAINER_MODE == existing ]] || \
+        fail "restart-$role is supported only when container_mode is existing"
 
-    local role addresses_name index host container
-    for role in verifier trainer; do
-        if [[ $role == verifier ]]; then
-            addresses_name=CLUSTER_VERIFIER_IPS
-        else
-            addresses_name=CLUSTER_TRAINER_IPS
-        fi
-        local -n addresses=$addresses_name
-        for index in "${!addresses[@]}"; do
-            host=${addresses[$index]}
-            container=$(container_for "$role" "$index")
-            printf '[restart] host=%s container=%s\n' "$host" "$container"
-            remote "$host" \
-                "docker restart -t 30 $(quote "$container") >/dev/null"
-        done
-        unset -n addresses
+    local index host container
+    for index in "${!addresses[@]}"; do
+        host=${addresses[$index]}
+        container=$(container_for "$role" "$index")
+        printf '[restart] host=%s container=%s\n' "$host" "$container"
+        remote "$host" \
+            "docker restart -t 30 $(quote "$container") >/dev/null"
     done
+}
+
+restart_verifiers() {
+    stop_role verifier CLUSTER_VERIFIER_IPS
+    restart_existing_role verifier CLUSTER_VERIFIER_IPS
+}
+
+restart_trainers() {
+    stop_role trainer CLUSTER_TRAINER_IPS
+    stop_role smoke CLUSTER_TRAINER_IPS
+    restart_existing_role trainer CLUSTER_TRAINER_IPS
 }
 
 stop_cluster() {
     stop_role verifier CLUSTER_VERIFIER_IPS
     stop_role trainer CLUSTER_TRAINER_IPS
     stop_role smoke CLUSTER_TRAINER_IPS
-    restart_existing_containers
+    if [[ $CONTAINER_MODE == existing ]]; then
+        restart_existing_role verifier CLUSTER_VERIFIER_IPS
+        restart_existing_role trainer CLUSTER_TRAINER_IPS
+    fi
 }
 
 COMMAND=${1:-}
@@ -336,6 +347,8 @@ case "$COMMAND" in
     train) start_group trainer online-cache CLUSTER_TRAINER_IPS ;;
     offline) start_group trainer offline CLUSTER_TRAINER_IPS ;;
     status) show_status ;;
+    restart-verifiers) restart_verifiers ;;
+    restart-trainers) restart_trainers ;;
     stop) stop_cluster ;;
     -h | --help | help) usage ;;
     *) fail "unknown command: $COMMAND" ;;
