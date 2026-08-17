@@ -76,15 +76,23 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         if tc.model_type != "glm_moe_dsa":
             return
 
-        from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import (  # noqa: PLC0415
-            GlmMoeDsaExperts,
-            GlmMoeDsaTopkRouter,
-        )
-
-        if isinstance(module, GlmMoeDsaTopkRouter):
+        # These two GLM implementation classes are private Transformers details
+        # and have been renamed across releases.  Identify them by the raw
+        # parameters that need special initialization instead of importing a
+        # version-specific class name.  The checks are intentionally narrow so
+        # ordinary Linear modules continue to use the parent initializer.
+        if (
+            isinstance(getattr(module, "weight", None), nn.Parameter)
+            and isinstance(
+                getattr(module, "e_score_correction_bias", None), nn.Parameter
+            )
+        ):
             nn.init.normal_(module.weight, mean=0.0, std=tc.initializer_range)
             nn.init.zeros_(module.e_score_correction_bias)
-        elif isinstance(module, GlmMoeDsaExperts):
+        elif (
+            isinstance(getattr(module, "gate_up_proj", None), nn.Parameter)
+            and isinstance(getattr(module, "down_proj", None), nn.Parameter)
+        ):
             nn.init.normal_(module.gate_up_proj, mean=0.0, std=tc.initializer_range)
             nn.init.normal_(module.down_proj, mean=0.0, std=tc.initializer_range)
 
