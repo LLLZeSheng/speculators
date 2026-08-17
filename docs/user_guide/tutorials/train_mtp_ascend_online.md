@@ -67,7 +67,19 @@ The defaults are:
 BF16 MTP initialization model: /kos_ulan/models/GLM-5.2
 training dataset:              /kos_ulan/datasets/glm52-mtp-online
 repository:                    /kos_ulan/spec_train/speculators
+training context:              32768 tokens
+verifier model length:         32769 tokens
+verifier batched-token budget: 32768 tokens
+online request timeout:        900 seconds
 ```
+
+The one-token difference between the training context and model length is
+intentional: hidden-state extraction sends one generation token. The launcher
+disables chunked prefill, so `VERIFIER_MAX_BATCHED_TOKENS` must be at least
+`TOTAL_SEQ_LEN`. With DP2, one verifier node can actively prefill about two
+full 32K samples at once; additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
+keeps capacity for shorter samples without claiming eight simultaneous 32K
+prefills.
 
 Override a non-standard path during `configure` with `--mtp-init-model`,
 `--data-path`, or `--repo-path`. The manager resolves `NIC_NAME` separately on
@@ -123,6 +135,11 @@ unique `SMOKE_RUN_ID`. Verify these critical values:
 VERIFIER_MODEL_PATH=/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 VERIFIER_SOURCE_MODEL_PATH=/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 VERIFIER_QUANTIZATION_MODE=ascend
+VERIFIER_MAX_MODEL_LEN=32769
+VERIFIER_MAX_BATCHED_TOKENS=32768
+VERIFIER_MAX_NUM_SEQS=8
+TOTAL_SEQ_LEN=32768
+REQUEST_TIMEOUT=900
 TRAINER_MODE=smoke
 TRAINER_DATA_MODE=online-cache
 EPOCHS=5
@@ -269,9 +286,10 @@ validation, a numbered checkpoint, increasing cache file count during epoch
 
 ## 7. Native-MTP inference patch boundary
 
-The online-training verifier in this runbook does not pass
-`--speculative-config`. It runs the target model only to generate layer-78
-hidden states, so it does not construct a native MTP drafter and does not need
+The hidden-state launcher uses a speculative configuration whose method is
+`extract_hidden_states`; it does not use native `deepseek_mtp`. It therefore
+runs the target model to generate layer-78 hidden states without constructing
+or loading the native MTP drafter's shared embedding/head, and does not need
 `patch_vllm_glm52_mtp_shared_weights.py`.
 
 Apply that loader patch later in any inference or benchmark container which

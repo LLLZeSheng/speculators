@@ -142,6 +142,12 @@ write_config() {
         printf 'TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-online-cache}\n'
         printf 'SMOKE_RUN_ID=${SMOKE_RUN_ID:-%q}\n' \
             "smoke-$(date +%Y%m%d-%H%M%S)"
+        printf 'VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}\n'
+        printf 'VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-8}\n'
+        printf 'VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32768}\n'
+        printf 'TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-32768}\n'
+        printf 'REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-900}\n'
+        printf 'MAX_RETRIES=${MAX_RETRIES:-3}\n'
         printf 'EPOCHS=${EPOCHS:-5}\n'
     } >"$temporary"
     chmod 600 "$temporary"

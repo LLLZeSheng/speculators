@@ -77,8 +77,8 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "/kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8" in result.stdout
     assert "--data-parallel-size 2" in result.stdout
     assert "--tensor-parallel-size 8" in result.stdout
-    assert "--max-model-len 8193" in result.stdout
-    assert "--max-num-batched-tokens 8192" in result.stdout
+    assert "--max-model-len 32769" in result.stdout
+    assert "--max-num-batched-tokens 32768" in result.stdout
     assert "scripts/prepare_mixed_quant_model.py" not in result.stdout
     assert "--quantization ascend" in result.stdout
     assert "--enable-expert-parallel" in result.stdout
@@ -117,6 +117,9 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--force-generate" not in result.stdout
     assert "--on-generation-error raise" in result.stdout
     assert "--checkpoint-steps 1000" in result.stdout
+    assert "--total-seq-len 32768" in result.stdout
+    assert "--request-timeout 900" in result.stdout
+    assert "--max-retries 3" in result.stdout
 
 
 def test_trainer_offline_mode_never_contacts_verifier():
@@ -161,6 +164,18 @@ def test_trainer_accepts_8192_with_one_output_token_of_headroom():
 
     assert result.returncode == 0, result.stderr
     assert "--total-seq-len 8192" in result.stdout
+
+
+def test_trainer_rejects_token_budget_smaller_than_context():
+    result = _run(
+        "trainer",
+        TOTAL_SEQ_LEN="32768",
+        VERIFIER_MAX_MODEL_LEN="32769",
+        VERIFIER_MAX_BATCHED_TOKENS="8192",
+    )
+
+    assert result.returncode != 0
+    assert "VERIFIER_MAX_BATCHED_TOKENS" in result.stderr
 
 
 def test_smoke_dry_run_caps_data_context_and_steps():

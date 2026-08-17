@@ -89,6 +89,23 @@ MANAGER_DRY_RUN=1 bash \
   examples/train/manage_mtp_glm52_ascend_online_4v4t.sh start-verifiers
 ```
 
+生成配置已经按 32K 样本设置以下默认值：
+
+```text
+TOTAL_SEQ_LEN=32768
+VERIFIER_MAX_MODEL_LEN=32769
+VERIFIER_MAX_BATCHED_TOKENS=32768
+VERIFIER_MAX_NUM_SEQS=8
+REQUEST_TIMEOUT=900
+MAX_RETRIES=3
+```
+
+`32769` 为一次 hidden-state 请求额外保留 1 个生成 token。hidden-state
+launcher 会关闭 chunked prefill，因此 batched-token 预算不能小于输入长度。
+每台 verifier 是 DP2 × TP8，满 32K 时实际约可同时 prefill 2 条；其余请求会
+排队。`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
+32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
+
 ## 3. 一键预检
 
 ```bash
@@ -236,9 +253,10 @@ bash "$MANAGER" stop
 
 ## 9. MTP 推理补丁的边界
 
-本在线训练 verifier 没有传入 `--speculative-config`。它只负责运行目标模型并
-生成 layer-78 hidden states，不会构造 MTP drafter，因此在线训练不需要
-`patch_vllm_glm52_mtp_shared_weights.py`。
+hidden-state launcher 会使用 `method=extract_hidden_states` 的 speculative
+配置，但不会使用原生 `deepseek_mtp`。它只负责运行目标模型并生成 layer-78
+hidden states，不会构造或加载原生 MTP drafter 的共享 embedding/head，因此
+在线训练不需要 `patch_vllm_glm52_mtp_shared_weights.py`。
 
 训练结束后，如果在 vLLM 中加载原生 MTP 做推理、接收率测试或 benchmark，
 相应推理容器才需要应用共享 embedding/head loader 补丁。详情参见
