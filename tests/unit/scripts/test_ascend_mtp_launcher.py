@@ -182,13 +182,20 @@ def test_smoke_dry_run_caps_data_context_and_steps():
     result = _run("smoke")
 
     assert result.returncode == 0, result.stderr
-    assert "Prepare smoke dataset (64 samples)" in result.stdout
+    assert "Prepare smoke dataset (256 samples)" in result.stdout
     assert "--total-seq-len 1024" in result.stdout
     assert "--max-steps 2" in result.stdout
     assert "smoke" in result.stdout
     assert "--on-missing generate" in result.stdout
     assert "-smoke-unit-test" in result.stdout
     assert "--no-resume-from-checkpoint" in result.stdout
+
+
+def test_smoke_rejects_dataset_too_small_for_world_size():
+    result = _run("smoke", SMOKE_SAMPLES="64")
+
+    assert result.returncode != 0
+    assert "SMOKE_SAMPLES=64 is too small for 64 training ranks" in result.stderr
 
 
 def test_smoke_requires_a_shared_run_id():

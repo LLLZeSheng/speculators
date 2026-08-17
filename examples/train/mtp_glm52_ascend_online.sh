@@ -68,9 +68,9 @@ RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
 # offline: prohibit generation and consume only the persisted first-epoch cache.
 TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-online-cache}
 
-SMOKE_SAMPLES=${SMOKE_SAMPLES:-64}
+SMOKE_SAMPLES=${SMOKE_SAMPLES:-256}
 SMOKE_RUN_ID=${SMOKE_RUN_ID:-}
-SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-${SHARED_ROOT}/spec_train/smoke/glm52-mtp3-tokens-64-${SMOKE_RUN_ID:-unset}}
+SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-${SHARED_ROOT}/spec_train/smoke/glm52-mtp3-tokens-${SMOKE_SAMPLES}-${SMOKE_RUN_ID:-unset}}
 MTP_PREPARE_TIMEOUT=${MTP_PREPARE_TIMEOUT:-3600}
 
 ASCEND_DEVICES=${ASCEND_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
@@ -515,6 +515,13 @@ run_trainer() {
     local effective_max_steps=$MAX_STEPS
     local effective_run_name=$RUN_NAME
     if [[ $mode == smoke ]]; then
+        # The distributed sampler drops incomplete global batches.  Keep enough
+        # rows for at least two batches after the train/validation split, with
+        # additional headroom for filtered samples.
+        local minimum_smoke_samples=$((NNODES * NPROC_PER_NODE * 4))
+        if ((SMOKE_SAMPLES < minimum_smoke_samples)); then
+            fail "SMOKE_SAMPLES=$SMOKE_SAMPLES is too small for $((NNODES * NPROC_PER_NODE)) training ranks; use at least $minimum_smoke_samples"
+        fi
         prepare_smoke_data
         effective_data=$SMOKE_DATA_PATH
         effective_output="${OUTPUT_PATH}-smoke-${SMOKE_RUN_ID}"
