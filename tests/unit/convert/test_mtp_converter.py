@@ -140,6 +140,7 @@ class TestNormalizeConfigFromWeights:
             "model_type": "glm_moe_dsa",
             "kv_lora_rank": 512,
             "qk_rope_head_dim": 192,
+            "head_dim": 192,
         }
         weights = {
             "mtp_layers.0.self_attn.kv_a_proj_with_mqa.weight": torch.empty(
@@ -150,7 +151,9 @@ class TestNormalizeConfigFromWeights:
         normalized = MTPConverter._normalize_config_from_weights(config, weights)
 
         assert normalized["qk_rope_head_dim"] == 64
+        assert "head_dim" not in normalized
         assert config["qk_rope_head_dim"] == 192
+        assert config["head_dim"] == 192
 
     def test_leaves_non_glm_config_unchanged(self):
         config = {"model_type": "qwen3", "qk_rope_head_dim": 192}

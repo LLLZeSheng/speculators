@@ -164,6 +164,7 @@ class MTPConverter:
 
         source_config = self._normalize_config_from_weights(source_config, weights)
         config = self._build_config(source_config, base_model, num_speculative_steps)
+        self._normalize_built_config_from_weights(config, weights)
         saved_path = self._save(config, weights, output_path)
         logger.success(f"Saved to: {saved_path}")
 
@@ -207,6 +208,19 @@ class MTPConverter:
         if normalized.get("model_type") != "glm_moe_dsa":
             return normalized
 
+        # Transformers 5.x inherits ``{"head_dim": "qk_rope_head_dim"}``
+        # through attribute_map.  Passing the legacy head_dim=192 entry from a
+        # GLM config therefore overwrites the correct qk_rope_head_dim=64 even
+        # when the latter is also present.  GLM attention derives its geometry
+        # from the explicit qk_nope/qk_rope fields, so discard this alias before
+        # constructing GlmMoeDsaConfig.
+        legacy_head_dim = normalized.pop("head_dim", None)
+        if legacy_head_dim is not None:
+            logger.warning(
+                "Ignoring legacy GLM head_dim to avoid Transformers "
+                f"attribute-map collision: head_dim={legacy_head_dim}"
+            )
+
         key = "mtp_layers.0.self_attn.kv_a_proj_with_mqa.weight"
         tensor = weights.get(key)
         kv_lora_rank = normalized.get("kv_lora_rank")
@@ -228,6 +242,36 @@ class MTPConverter:
             )
             normalized["qk_rope_head_dim"] = inferred
         return normalized
+
+    @staticmethod
+    def _normalize_built_config_from_weights(
+        config: MTPSpeculatorConfig,
+        weights: dict[str, torch.Tensor],
+    ) -> None:
+        """Enforce the inferred GLM dimension on the constructed config object."""
+        transformer_config = config.transformer_layer_config
+        if transformer_config.model_type != "glm_moe_dsa":
+            return
+
+        key = "mtp_layers.0.self_attn.kv_a_proj_with_mqa.weight"
+        tensor = weights.get(key)
+        kv_lora_rank = getattr(transformer_config, "kv_lora_rank", None)
+        if tensor is None or not isinstance(kv_lora_rank, int):
+            return
+
+        inferred = tensor.shape[0] - kv_lora_rank
+        if inferred <= 0:
+            raise ValueError(
+                f"Cannot infer qk_rope_head_dim from {key}: "
+                f"shape={tuple(tensor.shape)}, kv_lora_rank={kv_lora_rank}"
+            )
+        transformer_config.qk_rope_head_dim = inferred
+        effective = transformer_config.qk_rope_head_dim
+        if effective != inferred:
+            raise ValueError(
+                "Transformers did not retain the repaired GLM "
+                f"qk_rope_head_dim: expected {inferred}, got {effective}"
+            )
 
     @staticmethod
     def _remap_key(key: str, source_prefix: str = _MTP_PREFIX) -> str:
