@@ -117,15 +117,16 @@ training dataset:              /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average
 repository:                    /kos_ulan/lzs/spec_train/speculators
 training context:              32768 tokens
 verifier model length:         32769 tokens
-verifier batched-token budget: 32776 tokens
+verifier batched-token budget: 32784 tokens
 online request timeout:        900 seconds
 ```
 
 The one-token difference between the training context and model length is
-intentional: hidden-state extraction sends one generation token. TP8 sequence
-parallel pads the profile size to a multiple of eight, so the batched-token
-budget is 32776 rather than 32769. With DP2, one verifier node can actively prefill about two
-full 32K samples at once; additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
+intentional: hidden-state extraction sends one generation token. TP16 sequence
+parallel pads the profile size to a multiple of sixteen, so the batched-token
+budget is 32784 rather than 32769. DP1 x TP16 is required to leave enough
+per-device activation headroom on 61 GiB NPUs; each verifier node runs one
+full 32K prefill at a time and additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
 keeps capacity for shorter samples without claiming eight simultaneous 32K
 prefills.
 
@@ -193,7 +194,7 @@ verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 verifier_quantization_mode: ascend
 mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_max_model_len: 32769
-verifier_max_batched_tokens: 32776
+verifier_max_batched_tokens: 32784
 verifier_max_num_seqs: 8
 total_seq_len: 32768
 request_timeout: 900

@@ -82,7 +82,7 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
         "nuoya-average2k8k-32k" in text
     )
     assert "verifier_max_model_len: 32769" in text
-    assert "verifier_max_batched_tokens: 32776" in text
+    assert "verifier_max_batched_tokens: 32784" in text
     assert "total_seq_len: 32768" in text
     assert "request_timeout: 900" in text
     assert "container_mode: create" in text

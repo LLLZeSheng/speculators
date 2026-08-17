@@ -1,7 +1,7 @@
 # 八台 Ascend 910C 在线训练 GLM-5.2 MTP3
 
 本文是 4 台 verifier + 4 台 trainer 的生产操作说明。每台机器使用 16
-张 NPU：verifier 采用 DP2 × TP8，四台 trainer 组成 64-rank FSDP 训练任务。
+张 NPU：verifier 采用 DP1 × TP16，四台 trainer 组成 64-rank FSDP 训练任务。
 
 数据生命周期如下：
 
@@ -103,18 +103,19 @@ MANAGER_DRY_RUN=1 bash \
 ```yaml
 total_seq_len: 32768
 verifier_max_model_len: 32769
-verifier_max_batched_tokens: 32776
+verifier_max_batched_tokens: 32784
 verifier_max_num_seqs: 8
 request_timeout: 900
 max_retries: 3
 ```
 
-`32769` 为一次 hidden-state 请求额外保留 1 个生成 token。TP8 sequence
-parallel 会把 profile token 数向上补齐到 8 的倍数，因此 batched-token 预算
-必须设为 `32776`。如果也设成 `32769`，补齐后的 profile 会超过内部 buffer
+`32769` 为一次 hidden-state 请求额外保留 1 个生成 token。TP16 sequence
+parallel 会把 profile token 数向上补齐到 16 的倍数，因此 batched-token 预算
+必须设为 `32784`。如果也设成 `32769`，补齐后的 profile 会超过内部 buffer
 上限并触发断言。
-每台 verifier 是 DP2 × TP8，满 32K 时实际约可同时 prefill 2 条；其余请求会
-排队。`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
+每台 verifier 是 DP1 × TP16，满 32K 时实际运行 1 条；其余请求会排队。
+TP16 为 61 GiB NPU 留出足够的模型分片和 32K profile 激活空间。
+`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
 32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
 
 YAML 同时明确记录容器行为：

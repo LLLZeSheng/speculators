@@ -75,8 +75,8 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--target-layer-ids 78" in result.stdout
     assert "--hidden-states-path" in result.stdout
     assert "/kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8" in result.stdout
-    assert "--data-parallel-size 2" in result.stdout
-    assert "--tensor-parallel-size 8" in result.stdout
+    assert "--data-parallel-size 1" in result.stdout
+    assert "--tensor-parallel-size 16" in result.stdout
     assert "--max-model-len 32769" in result.stdout
     assert "--max-num-batched-tokens 32768" in result.stdout
     assert "scripts/prepare_mixed_quant_model.py" not in result.stdout

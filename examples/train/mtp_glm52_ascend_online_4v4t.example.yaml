@@ -42,12 +42,12 @@ output_path: /kos_ulan/lzs/spec_train/ckpts/glm52-w4a8-mg13
 log_root: /kos_ulan/lzs/spec_train/logs/glm52-w4a8-mg13
 
 verifier_port: 8077
-verifier_dp_size: 2
-verifier_tp_size: 8
+verifier_dp_size: 1
+verifier_tp_size: 16
 verifier_max_model_len: 32769
 verifier_max_num_seqs: 8
-# TP8 sequence parallel pads 32769 to the next multiple of 8.
-verifier_max_batched_tokens: 32776
+# TP16 sequence parallel pads 32769 to the next multiple of 16.
+verifier_max_batched_tokens: 32784
 total_seq_len: 32768
 request_timeout: 900
 max_retries: 3
