@@ -15,12 +15,12 @@ TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 
 SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
 VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4}
-# The W4A8C8 verifier is inference-only. This path must point to an unquantized
-# GLM-5.2 checkpoint containing the native MTP layer.
-MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-${SHARED_ROOT}/models/GLM-5.2}
+# The prepared MG13 view keeps its native MTP layer and shared embedding/head
+# tensors in floating point even though the main verifier layers are W4A8.
+MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-$VERIFIER_MODEL_PATH}
 DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k}
 HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-${SHARED_ROOT}/spec_train/online_hidden_states/glm52-w4a8c8}
-MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-bf16-mtp3}
+MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-mg13-native-mtp3}
 OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp3}
 LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp3}
 VERIFIER_METADATA_PATH=${VERIFIER_METADATA_PATH:-${SHARED_ROOT}/spec_train/metadata/glm52-w4a8c8}
@@ -280,7 +280,7 @@ preflight_args() {
     fi
     PREFLIGHT_CMD=(
         "$PYTHON_BIN" "$REPO_ROOT/scripts/preflight_ascend_mtp.py"
-        --bf16-model "$MTP_INIT_MODEL_PATH"
+        --mtp-model "$MTP_INIT_MODEL_PATH"
         --verifier-model "$verifier_preflight_path"
         --data-path "$DATA_PATH"
         --hidden-states-path "$HIDDEN_STATES_PATH"
@@ -433,7 +433,7 @@ prepare_mtp_draft() {
             trap - EXIT
         ) 9>"${MTP_DRAFT_PATH}.lock"
     else
-        wait_for_marker "$marker" "BF16 native MTP initialization"
+        wait_for_marker "$marker" "native floating-point MTP initialization"
     fi
 }
 

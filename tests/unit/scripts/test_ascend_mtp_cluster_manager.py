@@ -35,7 +35,11 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     text = config.read_text(encoding="utf-8")
     assert "container_name_prefix: test-mtp" in text
     assert "nic_name: auto" in text
-    assert "mtp_init_model_path: /kos_ulan/models/GLM-5.2" in text
+    assert (
+        "mtp_init_model_path: "
+        "/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4"
+        in text
+    )
     assert (
         "data_path: /kos_ulan/lzs/spec_train/dataset/hf/"
         "nuoya-average2k8k-32k" in text
@@ -127,7 +131,10 @@ def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
             "ROLE": "preflight",
             "LOCAL_IP": "10.0.0.7",
             "NIC_NAME": "auto",
-            "MTP_INIT_MODEL_PATH": "/kos_ulan/models/GLM-5.2",
+            "MTP_INIT_MODEL_PATH": (
+                "/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/"
+                "v1-ascend-modelslim-v4"
+            ),
             "DATA_PATH": "/kos_ulan/datasets/glm52-mtp-online",
         }
     )

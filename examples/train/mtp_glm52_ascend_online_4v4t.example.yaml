@@ -24,7 +24,7 @@ nic_name: auto
 verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 verifier_quantization_mode: ascend
-mtp_init_model_path: /kos_ulan/models/GLM-5.2
+mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 hidden_states_path: /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
 output_path: /kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3

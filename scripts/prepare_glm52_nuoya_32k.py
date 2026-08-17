@@ -26,7 +26,9 @@ DEFAULT_SOURCES = (
 DEFAULT_OUTPUT = (
     "/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k"
 )
-DEFAULT_MODEL = "/kos_ulan/models/GLM-5.2"
+DEFAULT_MODEL = (
+    "/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4"
+)
 
 
 def parse_args() -> argparse.Namespace:

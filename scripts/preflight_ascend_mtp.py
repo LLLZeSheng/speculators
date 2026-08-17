@@ -87,27 +87,28 @@ def _load_model_config(model_path: str | Path) -> dict[str, Any]:
 
 
 def compare_model_configs(
-    bf16_model_path: str | Path,
+    mtp_model_path: str | Path,
     verifier_model_path: str | Path,
 ) -> dict[str, Any]:
     """Require matching GLM structural fields while ignoring quantization data."""
-    bf16 = _load_model_config(bf16_model_path)
+    mtp = _load_model_config(mtp_model_path)
     verifier = _load_model_config(verifier_model_path)
-    if bf16.get("model_type") != "glm_moe_dsa":
+    if mtp.get("model_type") != "glm_moe_dsa":
         raise PreflightError(
-            "BF16 checkpoint model_type must be glm_moe_dsa, got "
-            f"{bf16.get('model_type')!r}"
+            "MTP checkpoint model_type must be glm_moe_dsa, got "
+            f"{mtp.get('model_type')!r}"
         )
     for field in _STRUCTURAL_FIELDS:
-        left = bf16.get(field)
+        left = mtp.get(field)
         right = verifier.get(field)
         if left is None or right is None:
             raise PreflightError(f"model config field {field!r} is missing")
         if left != right:
             raise PreflightError(
-                f"model config mismatch for {field}: BF16={left!r}, W4A8={right!r}"
+                f"model config mismatch for {field}: MTP={left!r}, "
+                f"verifier={right!r}"
             )
-    return {field: bf16[field] for field in _STRUCTURAL_FIELDS}
+    return {field: mtp[field] for field in _STRUCTURAL_FIELDS}
 
 
 def _sha256(path: Path) -> str:
@@ -119,15 +120,15 @@ def _sha256(path: Path) -> str:
 
 
 def compare_tokenizers(
-    bf16_model_path: str | Path,
+    mtp_model_path: str | Path,
     verifier_model_path: str | Path,
 ) -> list[str]:
     """Compare local tokenizer assets byte-for-byte without loading model code."""
-    bf16_root = Path(bf16_model_path)
+    mtp_root = Path(mtp_model_path)
     verifier_root = Path(verifier_model_path)
     compared: list[str] = []
     for filename in _TOKENIZER_FILES:
-        left = bf16_root / filename
+        left = mtp_root / filename
         right = verifier_root / filename
         if left.is_file() != right.is_file():
             raise PreflightError(
@@ -145,25 +146,41 @@ def compare_tokenizers(
 
 
 def _load_checkpoint_keys(root: Path) -> tuple[list[str], dict[str, str] | None]:
-    index_path = root / "model.safetensors.index.json"
-    if index_path.is_file():
+    index_path = next(
+        (
+            path
+            for path in (
+                root / "model.safetensors.index.json",
+                root / "quant_model_weights.safetensors.index.json",
+            )
+            if path.is_file()
+        ),
+        None,
+    )
+    weight_map: dict[str, str] = {}
+    if index_path is not None:
         try:
             weight_map = json.loads(index_path.read_text())["weight_map"]
             if not isinstance(weight_map, dict):
                 raise TypeError("weight_map must be an object")
-            return list(weight_map), weight_map
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
             raise PreflightError(
                 f"invalid safetensors index {index_path}: {exc}"
             ) from exc
-    single_path = root / "model.safetensors"
-    if not single_path.is_file():
-        raise PreflightError(f"no safetensors checkpoint found under {root}")
-    try:
-        with safe_open(str(single_path), framework="pt") as handle:
-            return list(handle.keys()), None
-    except (OSError, ValueError) as exc:
-        raise PreflightError(f"invalid safetensors file {single_path}: {exc}") from exc
+    for single_path in (root / "model.safetensors", root / "mtp.safetensors"):
+        if not single_path.is_file():
+            continue
+        try:
+            with safe_open(str(single_path), framework="pt") as handle:
+                for key in handle.keys():
+                    weight_map[key] = single_path.name
+        except (OSError, ValueError) as exc:
+            raise PreflightError(
+                f"invalid safetensors file {single_path}: {exc}"
+            ) from exc
+    if not weight_map:
+        raise PreflightError(f"no supported safetensors checkpoint found under {root}")
+    return list(weight_map), weight_map
 
 
 def validate_native_mtp_weights(model_path: str | Path, layer_idx: int) -> int:
@@ -213,6 +230,12 @@ def _validate_indexed_tensors(
         try:
             with safe_open(str(root / shard), framework="pt") as handle:
                 absent = sorted(expected - set(handle.keys()))
+                non_float = sorted(
+                    key
+                    for key in expected - set(absent)
+                    if handle.get_slice(key).get_dtype()
+                    not in {"BF16", "F16", "F32", "F64"}
+                )
         except Exception as exc:
             raise PreflightError(
                 f"cannot open native MTP shard {shard}: {exc}"
@@ -220,6 +243,11 @@ def _validate_indexed_tensors(
         if absent:
             raise PreflightError(
                 f"native MTP tensors absent from shard {shard}: {absent}"
+            )
+        if non_float:
+            raise PreflightError(
+                "native MTP tensors must be floating point for training: "
+                f"{non_float[:5]}"
             )
 
 
@@ -346,7 +374,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate GLM-5.2 Ascend online MTP training prerequisites"
     )
-    parser.add_argument("--bf16-model", required=True)
+    parser.add_argument(
+        "--mtp-model",
+        "--bf16-model",
+        dest="mtp_model",
+        required=True,
+        help="model directory containing floating-point native MTP tensors",
+    )
     parser.add_argument("--verifier-model", required=True)
     parser.add_argument("--data-path", required=True)
     parser.add_argument("--hidden-states-path", required=True)
@@ -360,10 +394,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        config = compare_model_configs(args.bf16_model, args.verifier_model)
-        tokenizer_files = compare_tokenizers(args.bf16_model, args.verifier_model)
+        config = compare_model_configs(args.mtp_model, args.verifier_model)
+        tokenizer_files = compare_tokenizers(args.mtp_model, args.verifier_model)
         mtp_tensors = validate_native_mtp_weights(
-            args.bf16_model,
+            args.mtp_model,
             config["num_hidden_layers"],
         )
         rows = validate_dataset(args.data_path)

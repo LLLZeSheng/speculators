@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from speculators.convert.mtp import converter as mtp_converter
 from speculators.convert.mtp.converter import MTPConverter
@@ -131,6 +132,26 @@ class TestResolveMtpPrefix:
 
         with pytest.raises(ValueError, match="model.layers.78"):
             MTPConverter._resolve_mtp_prefix(keys, config)
+
+
+class TestModelSlimExtraction:
+    def test_extracts_native_mtp_from_auxiliary_file(self, tmp_path):
+        native_key = "model.layers.78.eh_proj.weight"
+        tensor = torch.randn(4, 8, dtype=torch.bfloat16)
+        save_file({native_key: tensor}, tmp_path / "mtp.safetensors")
+
+        converter = MTPConverter()
+        weights = converter._extract_weights(
+            tmp_path, [native_key], "model.layers.78."
+        )
+
+        torch.testing.assert_close(weights["mtp_layers.0.input_proj.weight"], tensor)
+
+    def test_rejects_quantized_trainable_mtp_weights(self):
+        with pytest.raises(ValueError, match="must be floating point"):
+            MTPConverter._validate_float_weights(
+                {"mtp_layers.0.input_proj.weight": torch.ones(4, 8, dtype=torch.int8)}
+            )
 
 
 class TestFuseMoeExperts:

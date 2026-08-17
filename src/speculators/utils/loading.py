@@ -14,6 +14,31 @@ _WEIGHT_ALIASES: dict[str, list[str]] = {
     "model.norm.weight": ["norm.weight"],
 }
 
+_SAFETENSORS_INDEX_NAMES = (
+    "model.safetensors.index.json",
+    "quant_model_weights.safetensors.index.json",
+)
+
+
+def find_local_safetensors_index(checkpoint_dir: str | Path) -> Path | None:
+    """Find a supported local safetensors shard index.
+
+    Ascend ModelSlim exports use ``quant_model_weights.safetensors.index.json``
+    instead of the Hugging Face default. Prefer the standard name when both are
+    present so existing checkpoints retain their original behavior.
+    """
+    directory = Path(checkpoint_dir)
+    if not directory.is_dir():
+        return None
+    return next(
+        (
+            directory / name
+            for name in _SAFETENSORS_INDEX_NAMES
+            if (directory / name).is_file()
+        ),
+        None,
+    )
+
 
 def _resolve_key(name: str, weight_map: dict[str, str]) -> str | None:
     """Try exact match, then suffix match, then known aliases."""
@@ -63,10 +88,21 @@ def list_checkpoint_keys(checkpoint_dir: str | Path) -> list[str]:
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    index_path = checkpoint_dir / "model.safetensors.index.json"
-    if index_path.exists():
+    keys: dict[str, None] = {}
+    index_path = find_local_safetensors_index(checkpoint_dir)
+    if index_path is not None:
         with index_path.open() as f:
-            return list(json.load(f)["weight_map"].keys())
+            keys.update(dict.fromkeys(json.load(f)["weight_map"].keys()))
+
+    # Some ModelSlim runtime views keep native, unquantized MTP tensors in an
+    # auxiliary file which may not be represented by an older shard index.
+    mtp_file = checkpoint_dir / "mtp.safetensors"
+    if mtp_file.exists():
+        with safe_open(str(mtp_file), framework="pt") as f:
+            keys.update(dict.fromkeys(f.keys()))
+
+    if keys:
+        return list(keys)
 
     single = checkpoint_dir / "model.safetensors"
     if single.exists():
@@ -75,7 +111,9 @@ def list_checkpoint_keys(checkpoint_dir: str | Path) -> list[str]:
 
     raise FileNotFoundError(
         f"No safetensors checkpoint found at {checkpoint_dir}. "
-        "Expected model.safetensors.index.json or model.safetensors."
+        "Expected model.safetensors.index.json, "
+        "quant_model_weights.safetensors.index.json, model.safetensors, "
+        "or mtp.safetensors."
     )
 
 
@@ -93,14 +131,19 @@ def load_model_layers(
     :return: dict mapping input names/patterns to loaded tensors
     """
     # download the index file or build weight map for single-file models
+    local_index = find_local_safetensors_index(model_path)
     try:
-        index_file = _resolve_file(model_path, "model.safetensors.index.json")
+        index_file = (
+            local_index
+            if local_index is not None
+            else _resolve_file(model_path, "model.safetensors.index.json")
+        )
         with Path(index_file).open() as f:
             index = json.load(f)
         weight_map: dict[str, str] = index["weight_map"]
     except (FileNotFoundError, EntryNotFoundError):
         logger.warning(
-            "`model.safetensors.index.json` file not found. "
+            "No supported safetensors index file found. "
             "Checking for `model.safetensors` instead."
         )
         model_file = _resolve_file(model_path, "model.safetensors")

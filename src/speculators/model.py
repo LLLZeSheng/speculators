@@ -150,6 +150,17 @@ class DraftVocabMixin(nn.Module):
             weights_to_load,
             verifier_config.name_or_path,
         )
+        non_float = sorted(
+            name
+            for name, tensor in verifier_weights.items()
+            if not tensor.is_floating_point()
+        )
+        if non_float:
+            raise ValueError(
+                "Verifier embedding/head tensors used by a trainable speculator "
+                "must be floating point; found non-floating tensors: "
+                + ", ".join(non_float)
+            )
 
         embed_tokens_weight = verifier_weights["embed_tokens.weight"]
         lm_head_weight = verifier_weights.get("lm_head.weight", embed_tokens_weight)

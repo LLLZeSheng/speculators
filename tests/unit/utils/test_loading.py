@@ -4,12 +4,14 @@ Unit tests for the loading module in the Speculators library.
 
 import pytest
 import torch
+from safetensors.torch import save_file
 from transformers import AutoModelForCausalLM
 
 from speculators.utils.loading import (
     _resolve_file,
     _resolve_key,
     is_config_only_dir,
+    list_checkpoint_keys,
     load_model_layers,
 )
 
@@ -55,6 +57,37 @@ def test_is_config_only_dir_detects_sharded_index(tmp_path, index_file):
     (tmp_path / index_file).write_text("{}")
 
     assert is_config_only_dir(tmp_path) is False
+
+
+@pytest.mark.smoke
+def test_modelslim_index_and_auxiliary_mtp_are_supported(tmp_path):
+    shard = "quant_model_weights-00001-of-00001.safetensors"
+    tensors = {
+        "model.embed_tokens.weight": torch.randn(8, 4),
+        "lm_head.weight": torch.randn(8, 4),
+    }
+    save_file(tensors, tmp_path / shard)
+    (tmp_path / "quant_model_weights.safetensors.index.json").write_text(
+        '{"weight_map": {'
+        f'"model.embed_tokens.weight": "{shard}", '
+        f'"lm_head.weight": "{shard}"'
+        "}}"
+    )
+    save_file(
+        {"model.layers.78.eh_proj.weight": torch.randn(4, 8)},
+        tmp_path / "mtp.safetensors",
+    )
+
+    keys = list_checkpoint_keys(tmp_path)
+    assert "model.embed_tokens.weight" in keys
+    assert "model.layers.78.eh_proj.weight" in keys
+
+    loaded = load_model_layers(
+        ["model.embed_tokens.weight", "lm_head.weight"], str(tmp_path)
+    )
+    torch.testing.assert_close(
+        loaded["model.embed_tokens.weight"], tensors["model.embed_tokens.weight"]
+    )
 
 
 # _resolve_key Tests

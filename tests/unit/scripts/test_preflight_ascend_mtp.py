@@ -145,6 +145,28 @@ def test_validate_native_mtp_weights_accepts_single_file(tmp_path):
     assert preflight.validate_native_mtp_weights(model, 3) == len(tensors)
 
 
+def test_validate_native_mtp_weights_accepts_modelslim_layout(tmp_path):
+    model = _write_config(tmp_path / "model")
+    tensors = _native_mtp_tensors()
+    save_file(tensors, model / "mtp.safetensors")
+    (model / "quant_model_weights.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"model.embed_tokens.weight": "base.safetensors"}})
+    )
+
+    assert preflight.validate_native_mtp_weights(model, 3) == len(tensors)
+
+
+def test_validate_native_mtp_weights_rejects_integer_tensors(tmp_path):
+    model = _write_config(tmp_path / "model")
+    tensors = {
+        key: tensor.to(torch.int8) for key, tensor in _native_mtp_tensors().items()
+    }
+    save_file(tensors, model / "mtp.safetensors")
+
+    with pytest.raises(preflight.PreflightError, match="must be floating point"):
+        preflight.validate_native_mtp_weights(model, 3)
+
+
 def test_validate_native_mtp_weights_rejects_missing_layer(tmp_path):
     model = _write_config(tmp_path / "model")
     (model / "model.safetensors.index.json").write_text(

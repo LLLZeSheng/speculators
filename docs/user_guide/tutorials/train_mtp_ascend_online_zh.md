@@ -24,12 +24,17 @@ epoch 2+：读取同一份缓存 → 按离线方式继续训练
   /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 原始 verifier 权重：
   /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
-BF16 初始化模型：/kos_ulan/models/GLM-5.2
+原生 MTP 初始化模型：
+  /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 训练数据：/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 ```
 
-BF16 初始化模型必须包含原生 MTP layer。W4A8 verifier 只用于推理和生成
-hidden states，不能作为可训练 MTP 权重的初始化来源。
+MG13 主模型层仍然是只用于推理的 W4A8 权重，但准备好的 v4 运行视图中，
+第 78 层原生 MTP 以及共享 embedding/lm_head 是浮点权重。因此该目录现在
+也是首选的 `MTP_INIT_MODEL_PATH`。Speculators 会从 `mtp.safetensors`（或
+ModelSlim 索引）读取 MTP，并在转换前拒绝任何整数量化的可训练权重；共享
+权重通过 `quant_model_weights.safetensors.index.json` 定位。整个过程不会
+修改原模型或运行视图。
 
 所有节点应当具备：
 
@@ -143,7 +148,7 @@ Arrow 数据集：
 ```bash
 cd /kos_ulan/spec_train/speculators
 nohup python scripts/prepare_glm52_nuoya_32k.py \
-  --model /kos_ulan/models/GLM-5.2 \
+  --model /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
   > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
 ```
 

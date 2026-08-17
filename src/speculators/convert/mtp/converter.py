@@ -27,7 +27,10 @@ from speculators.convert.utils import (
 )
 from speculators.models.mtp import MTPDraftModel, MTPSpeculatorConfig
 from speculators.proposals.greedy import GreedyTokenProposalConfig
-from speculators.utils.loading import list_checkpoint_keys
+from speculators.utils.loading import (
+    find_local_safetensors_index,
+    list_checkpoint_keys,
+)
 
 __all__ = [
     "MTP_EXACT_REMAP",
@@ -135,6 +138,7 @@ class MTPConverter:
         source_prefix = self._resolve_mtp_prefix(all_keys, source_config)
 
         weights = self._extract_weights(local_path, all_keys, source_prefix)
+        self._validate_float_weights(weights)
         weights = self._fuse_moe_experts(weights)
         logger.info(f"Extracted {len(weights)} MTP weight tensors")
         return weights
@@ -272,24 +276,50 @@ class MTPConverter:
     ) -> dict[str, torch.Tensor]:
         needed = {k for k in all_keys if k.startswith(source_prefix)}
 
-        index_path = checkpoint_dir / "model.safetensors.index.json"
-        if index_path.exists():
-            return self._extract_from_shards(
-                checkpoint_dir, index_path, needed, source_prefix
+        weights: dict[str, torch.Tensor] = {}
+        index_path = find_local_safetensors_index(checkpoint_dir)
+        if index_path is not None:
+            weights.update(
+                self._extract_from_shards(
+                    checkpoint_dir, index_path, needed, source_prefix
+                )
             )
 
         single = checkpoint_dir / "model.safetensors"
         if single.exists():
-            weights: dict[str, torch.Tensor] = {}
             with safe_open(str(single), framework="pt") as f:
                 for key in needed & set(f.keys()):
                     weights[self._remap_key(key, source_prefix)] = f.get_tensor(key)
+
+        mtp_file = checkpoint_dir / "mtp.safetensors"
+        if mtp_file.exists():
+            with safe_open(str(mtp_file), framework="pt") as f:
+                for key in needed & set(f.keys()):
+                    weights[self._remap_key(key, source_prefix)] = f.get_tensor(key)
+
+        if weights:
             return weights
 
         raise FileNotFoundError(
             f"No safetensors checkpoint found at {checkpoint_dir}. "
-            "Expected model.safetensors.index.json or model.safetensors."
+            "Expected a standard Hugging Face checkpoint or an Ascend "
+            "ModelSlim checkpoint with quant_model_weights.safetensors.index.json "
+            "and/or mtp.safetensors."
         )
+
+    @staticmethod
+    def _validate_float_weights(weights: dict[str, torch.Tensor]) -> None:
+        """Reject packed/quantized tensors before creating a trainable draft."""
+        non_float = sorted(
+            key for key, tensor in weights.items() if not tensor.is_floating_point()
+        )
+        if non_float:
+            preview = ", ".join(non_float[:5])
+            raise ValueError(
+                "Native MTP tensors must be floating point for training; found "
+                f"{len(non_float)} non-floating tensor(s): {preview}. "
+                "Use an unquantized MTP layer or dequantize it before conversion."
+            )
 
     def _extract_from_shards(
         self,

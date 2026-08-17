@@ -28,12 +28,17 @@ For the Chinese version, see
   `/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4`
 - verifier source weights:
   `/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1`
-- a BF16 GLM-5.2 checkpoint containing the native MTP layer on `/kos_ulan`
+- the prepared MG13 runtime view containing `mtp.safetensors` and
+  `quant_model_weights.safetensors.index.json`
 - a Hugging Face dataset containing `input_ids`, `loss_mask`, and `seq_len`
 
-The W4A8 verifier is inference-only. MTP initialization and training remain
-BF16, so `MTP_INIT_MODEL_PATH` must point to the BF16 model. The verifier must
-use `VERIFIER_QUANTIZATION_MODE=ascend`; see
+The main MG13 verifier layers remain inference-only W4A8. Its native layer-78
+MTP tensors and shared embedding/head tensors are floating point, however, so
+the prepared v4 runtime view is also the preferred `MTP_INIT_MODEL_PATH`.
+Speculators reads the MTP tensors from `mtp.safetensors` (or the ModelSlim
+index), checks that every trainable tensor is floating point, and reads shared
+weights through `quant_model_weights.safetensors.index.json`. No source model
+file is modified. The verifier must use `VERIFIER_QUANTIZATION_MODE=ascend`; see
 [the MG13 ModelSlim diagnosis](glm52_mixed_compressed_tensors.md).
 
 Expected image packages are `torch_npu==2.10.0.post2`, `vllm==0.23.0`, and
@@ -74,7 +79,7 @@ bash "$MANAGER" validate-config \
 Important configured values are:
 
 ```text
-BF16 MTP initialization model: /kos_ulan/models/GLM-5.2
+native MTP initialization:     /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 training dataset:              /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 repository:                    /kos_ulan/spec_train/speculators
 training context:              32768 tokens
@@ -135,7 +140,7 @@ after interruption:
 ```bash
 cd /kos_ulan/spec_train/speculators
 nohup python scripts/prepare_glm52_nuoya_32k.py \
-  --model /kos_ulan/models/GLM-5.2 \
+  --model /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
   > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
 ```
 
@@ -153,6 +158,7 @@ unique `smoke_run_id`. Verify these critical YAML values:
 verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 verifier_quantization_mode: ascend
+mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_max_model_len: 32769
 verifier_max_batched_tokens: 32768
 verifier_max_num_seqs: 8
@@ -167,6 +173,11 @@ install_speculators_trainer: true
 
 Use one identical file on all nodes. IPs must be mutually routable and appear
 in `hostname -I`. Use `NODE_IP=<chosen-ip>` for a host with ambiguous IPs.
+
+Do not point `mtp_init_model_path` at the standalone `mtp.safetensors` file.
+It must be the model directory because conversion also needs `config.json`,
+tokenizer files, and the shared embedding/head tensors. A conventional BF16
+GLM-5.2 directory remains supported as a fallback.
 
 `nic_name: auto` is supported and resolves the interface from `NODE_IP` on each
 host before Docker starts.
