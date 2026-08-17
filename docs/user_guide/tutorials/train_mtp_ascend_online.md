@@ -224,7 +224,7 @@ behavior deterministic:
   `/kos_ulan/lzs/spec_train/speculators`, and `PYTHONPATH` is set before starting the
   hidden-state vLLM service;
 - trainer/smoke: automatically runs
-  `python -m pip install --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`,
+  `python -m pip install --no-build-isolation --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`,
   then starts the 64-rank `torchrun` job;
 - all roles use the same configured vLLM-Ascend image.
 

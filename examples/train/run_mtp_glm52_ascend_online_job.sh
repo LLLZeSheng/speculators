@@ -37,7 +37,8 @@ if [[ -f $pid_file ]]; then
 fi
 
 if [[ $INSTALL_SPECULATORS == 1 ]]; then
-    python -m pip install --no-deps -e "$CONTAINER_REPO_PATH/hs_connectors" \
+    python -m pip install --no-build-isolation --no-deps \
+        -e "$CONTAINER_REPO_PATH/hs_connectors" \
         -e "$CONTAINER_REPO_PATH"
 fi
 

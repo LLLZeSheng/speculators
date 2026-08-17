@@ -170,7 +170,7 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 - verifier：不执行 pip install。代码位于 `/kos_ulan/lzs/spec_train/speculators`，启动
   脚本设置 `PYTHONPATH` 后直接拉起 hidden-state vLLM 服务；
 - trainer/smoke：容器启动时自动执行
-  `python -m pip install --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`，
+  `python -m pip install --no-build-isolation --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`，
   随后进入四机 64-rank `torchrun`；
 - 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
 
