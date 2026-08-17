@@ -181,6 +181,78 @@ python scripts/patch_vllm_glm52_mtp_shared_weights.py \
   --target /path/to/vllm/model_executor/models/deepseek_mtp.py
 ```
 
+#### Exact runtime mapping and ownership
+
+The mapping is Python loader behavior, not model metadata. The patch modifies
+`DeepSeekMTP.load_weights()` in:
+
+```text
+/vllm-workspace/vllm/vllm/model_executor/models/deepseek_mtp.py
+```
+
+It handles the target-model keys before the generic loader rejects keys which
+are not scoped under an MTP layer:
+
+```text
+model.embed_tokens.weight
+  -> MTP model.embed_tokens.weight
+
+lm_head.weight
+  -> model.layers.<mtp_start_layer>.shared_head.head.weight
+```
+
+For this GLM-5.2 checkpoint, `<mtp_start_layer>` is 78. The implementation does
+not hard-code 78; it reads `self.model.mtp_start_layer_idx`, so the same patch
+can be reused when the MTP layer starts at another index.
+
+Ascend defines `AscendDeepSeekMTP` in:
+
+```text
+/vllm-workspace/vllm-ascend/vllm_ascend/patch/worker/patch_deepseek_mtp.py
+```
+
+That class inherits the vLLM `DeepSeekMTP` loading behavior, so the routing fix
+belongs in the vLLM file above. Inspect the installed change with:
+
+```bash
+grep -n -A35 -B5 GLM_MTP_SHARED_WEIGHT_FIX_V1 \
+  /vllm-workspace/vllm/vllm/model_executor/models/deepseek_mtp.py
+```
+
+#### Model configuration impact
+
+The shared-weight routing patch does not modify checkpoint tensors,
+`config.json`, or `quant_model_description.json`.
+
+The earlier non-destructive ModelSlim preparation is a separate operation:
+
+- the original `/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1` remains untouched;
+- the `v1-ascend-modelslim-v4` runtime view has its own copied `config.json`,
+  with the conflicting embedded `compressed-tensors` block removed; and
+- the runtime view has an augmented `quant_model_description.json` that marks
+  real, unquantized layer-78 MTP checkpoint weights as `FLOAT`.
+
+#### PD-disaggregated serving
+
+Apply the loader patch to every independent container which starts vLLM with a
+native MTP `--speculative-config`. This normally includes every decode
+container. It also includes a prefill container if its command retains the MTP
+option. A prefill container which never constructs an MTP drafter does not need
+the patch.
+
+Container filesystems are commonly independent. Run this check in every
+applicable P/D container, and repeat it after replacing or rebuilding an image:
+
+```bash
+python scripts/patch_vllm_glm52_mtp_shared_weights.py --check
+```
+
+The required result is `PATCH_STATUS=applied`. No additional model-config
+rewrite is required for PD serving. All nodes must still use the same runtime
+model view and `--quantization ascend`. Completely stop old workers before
+restarting, because an already running Python process retains the old loader
+code in memory.
+
 ## Related upstream work
 
 [vllm-project/vllm-ascend#5889](https://github.com/vllm-project/vllm-ascend/pull/5889)
