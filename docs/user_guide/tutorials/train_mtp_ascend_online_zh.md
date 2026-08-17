@@ -19,7 +19,7 @@ epoch 2+：读取同一份缓存 → 按离线方式继续训练
 ```text
 镜像：quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
 共享盘：/kos_ulan
-代码：/kos_ulan/spec_train/speculators
+代码：/kos_ulan/lzs/spec_train/speculators
 量化 verifier：
   /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 原始 verifier 权重：
@@ -50,11 +50,11 @@ YAML 是你维护的唯一配置源。管理脚本只读取和校验，不会生
 YAML。先复制模板，然后直接填写机器、容器和路径信息：
 
 ```bash
-cd /kos_ulan/spec_train/speculators
-mkdir -p /kos_ulan/spec_train/config
+cd /kos_ulan/lzs/spec_train/speculators
+mkdir -p /kos_ulan/lzs/spec_train/config
 cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 需要自行填写或确认：
@@ -71,14 +71,14 @@ vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 建议配置文件放在：
 
 ```text
-/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 启动任何远端任务前先进行纯本地校验：
 
 ```bash
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" validate-config --config "$CONFIG"
 ```
 
@@ -120,21 +120,21 @@ YAML 同时明确记录容器行为：
 ```yaml
 container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
 container_mode: create
-existing_container_name: glm52-w4a8-mg13-speculator-training
-container_name_prefix: glm52-online-mtp3
-container_repo_path: /workspace/speculators
-container_shm_size: 1g
+container_name_prefix: glm52-w4a8-mg13-speculator-training
+container_repo_path: /kos_ulan/lzs/spec_train/speculators
+repo_path: /kos_ulan/lzs/spec_train/speculators
 container_mounts:
   - /mnt/xds/sfs:/mnt/xds/sfs
   - /kos_ulan:/kos_ulan
-  - /kos_ulan/spec_train/speculators:/workspace/speculators
+  - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
   - /root/.cache:/root/.cache
 install_speculators_verifier: false
 install_speculators_trainer: true
 ```
 
-`container_mode: create` 使用 `docker run` 创建容器，参数与标准 A3
-启动方式对齐：host 网络、1 GiB shm、16 张 NPU、管理设备、Ascend 驱动、
+`container_mode: create` 不需要、也不应填写 `existing_container_name`。
+它使用 `docker run` 创建容器，参数与标准 A3 启动方式对齐：host 网络、
+默认 1 GiB shm、16 张 NPU、管理设备、Ascend 驱动、
 `/mnt/xds/sfs`、`/kos_ulan` 和 `/root/.cache`。需要额外挂载目录时，直接在
 `container_mounts` 追加 `宿主机路径:容器路径[:ro|rw]`。管理任务通过
 nohup 后台执行，因此不会加入只能在交互终端使用的 `-it`。
@@ -167,10 +167,10 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 
 不需要人工进入任何容器操作：
 
-- verifier：不执行 pip install。代码会挂载到 `/workspace/speculators`，启动
+- verifier：不执行 pip install。代码位于 `/kos_ulan/lzs/spec_train/speculators`，启动
   脚本设置 `PYTHONPATH` 后直接拉起 hidden-state vLLM 服务；
 - trainer/smoke：容器启动时自动执行
-  `python -m pip install --no-deps -e /workspace/speculators/hs_connectors -e /workspace/speculators`，
+  `python -m pip install --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`，
   随后进入四机 64-rank `torchrun`；
 - 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
 
@@ -185,7 +185,7 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 Arrow 数据集：
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 nohup python scripts/prepare_glm52_nuoya_32k.py \
   --model /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
   > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
@@ -203,9 +203,9 @@ nohup python scripts/prepare_glm52_nuoya_32k.py \
 ## 3. 一键预检
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" preflight --config "$CONFIG"
 ```
 

@@ -138,10 +138,8 @@ def validate(config: dict[str, str | list[str]]) -> None:
     required_scalars = (
         "container_image",
         "container_mode",
-        "existing_container_name",
         "container_name_prefix",
         "container_repo_path",
-        "container_shm_size",
         "repo_path",
         "shared_root",
         "nic_name",
@@ -172,10 +170,14 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError("container_name_prefix is not a valid Docker name prefix")
     if config.get("container_mode") not in {"create", "existing"}:
         raise ValueError("container_mode must be create or existing")
-    existing_name = config["existing_container_name"]
-    assert isinstance(existing_name, str)
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", existing_name) is None:
-        raise ValueError("existing_container_name is not a valid Docker name")
+    existing_name = config.get("existing_container_name")
+    if config.get("container_mode") == "existing":
+        if not isinstance(existing_name, str) or not existing_name:
+            raise ValueError(
+                "existing_container_name is required when container_mode=existing"
+            )
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", existing_name) is None:
+            raise ValueError("existing_container_name is not a valid Docker name")
     mounts = config.get("container_mounts")
     if not isinstance(mounts, list) or not mounts:
         raise ValueError("container_mounts must contain at least one mount")

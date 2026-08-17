@@ -23,7 +23,7 @@ For the Chinese version, see
 
 - image: `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
 - shared filesystem: `/kos_ulan` on all eight nodes
-- checkout: preferably `/kos_ulan/spec_train/speculators`
+- checkout: `/kos_ulan/lzs/spec_train/speculators`
 - prepared verifier:
   `/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4`
 - verifier source weights:
@@ -51,17 +51,17 @@ validates it; it never generates or rewrites it. Copy the template, then edit
 the machine addresses, container settings, and paths directly:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
-mkdir -p /kos_ulan/spec_train/config
+cd /kos_ulan/lzs/spec_train/speculators
+mkdir -p /kos_ulan/lzs/spec_train/config
 cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 The shared configuration is:
 
 ```text
-/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 It explicitly contains the four verifier IPs, four trainer IPs, image,
@@ -72,16 +72,18 @@ Choose one container lifecycle mode:
 
 ```yaml
 container_mode: create
-existing_container_name: glm52-w4a8-mg13-speculator-training
-container_shm_size: 1g
+container_name_prefix: glm52-w4a8-mg13-speculator-training
+container_repo_path: /kos_ulan/lzs/spec_train/speculators
+repo_path: /kos_ulan/lzs/spec_train/speculators
 container_mounts:
   - /mnt/xds/sfs:/mnt/xds/sfs
   - /kos_ulan:/kos_ulan
-  - /kos_ulan/spec_train/speculators:/workspace/speculators
+  - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
   - /root/.cache:/root/.cache
 ```
 
-`create` runs the configured image with host networking, 1 GiB shared memory,
+`create` does not use or require `existing_container_name`. It runs the
+configured image with host networking, 1 GiB shared memory by default,
 all 16 NPUs, Ascend driver files, and the YAML mount list. Add arbitrary
 `host_path:container_path[:ro|rw]` entries to that list. The manager runs under
 nohup, so it intentionally omits terminal-only `-it`.
@@ -104,7 +106,7 @@ Validate it locally before any SSH or Docker operation:
 ```bash
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
 bash "$MANAGER" validate-config \
-  --config /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+  --config /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 Important configured values are:
@@ -112,7 +114,7 @@ Important configured values are:
 ```text
 native MTP initialization:     /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 training dataset:              /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
-repository:                    /kos_ulan/spec_train/speculators
+repository:                    /kos_ulan/lzs/spec_train/speculators
 training context:              32768 tokens
 verifier model length:         32769 tokens
 verifier batched-token budget: 32768 tokens
@@ -133,7 +135,7 @@ resolves the interface separately on each host from its configured IP.
 The complete managed workflow is:
 
 ```bash
-CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" preflight --config "$CONFIG"
 bash "$MANAGER" start-verifiers --config "$CONFIG"
 bash "$MANAGER" wait-verifiers --config "$CONFIG"
@@ -169,7 +171,7 @@ one shuffled 32K Hugging Face dataset. Completed staging shards are reused
 after interruption:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 nohup python scripts/prepare_glm52_nuoya_32k.py \
   --model /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
   > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
@@ -219,10 +221,10 @@ No interactive container setup is required. The host wrapper makes the role
 behavior deterministic:
 
 - verifier: does not run pip; the repository is bind-mounted at
-  `/workspace/speculators`, and `PYTHONPATH` is set before starting the
+  `/kos_ulan/lzs/spec_train/speculators`, and `PYTHONPATH` is set before starting the
   hidden-state vLLM service;
 - trainer/smoke: automatically runs
-  `python -m pip install --no-deps -e /workspace/speculators/hs_connectors -e /workspace/speculators`,
+  `python -m pip install --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`,
   then starts the 64-rank `torchrun` job;
 - all roles use the same configured vLLM-Ascend image.
 
@@ -235,9 +237,9 @@ by a locally modified launcher.
 On one verifier and one trainer, inspect commands without loading models:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 DRY_RUN=1 bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 Verifier output must contain `--quantization ascend`, must use the v4 path,
@@ -246,9 +248,9 @@ and must not invoke `prepare_mixed_quant_model.py`.
 Start all four verifiers with the same command on each verifier node:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/verifier-container-$(hostname).log 2>&1 &
 ```
 
@@ -263,9 +265,9 @@ nodes. Smoke uses 64 samples and two steps, and deletes its generated files so
 it does not contaminate the production cache:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/smoke-container-$(hostname).log 2>&1 &
 ```
 
@@ -279,10 +281,10 @@ final total `EPOCHS` value (for example 5) from the beginning. Start on all
 four trainer nodes within the HCCL rendezvous timeout:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 TRAINER_MODE=trainer TRAINER_DATA_MODE=online-cache nohup \
   bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/trainer-container-$(hostname).log 2>&1 &
 ```
 
@@ -306,10 +308,10 @@ After epoch 1 has completed successfully, any later restart may use strict
 offline mode:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /kos_ulan/lzs/spec_train/speculators
 TRAINER_MODE=trainer TRAINER_DATA_MODE=offline nohup \
   bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/trainer-offline-container-$(hostname).log 2>&1 &
 ```
 

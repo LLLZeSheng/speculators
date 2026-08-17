@@ -21,7 +21,7 @@ def _write_user_yaml(path: Path) -> None:
         "FILL_TRAINER_2_IP": "10.0.1.3",
         "FILL_TRAINER_3_IP": "10.0.1.4",
         "FILL_UNIQUE_SMOKE_ID": "unit-test",
-        "glm52-online-mtp3": "test-mtp",
+        "glm52-w4a8-mg13-speculator-training": "test-mtp",
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
@@ -93,7 +93,8 @@ def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
     _write_user_yaml(config)
     text = config.read_text(encoding="utf-8").replace(
-        "container_mode: create", "container_mode: existing"
+        "container_mode: create",
+        "container_mode: existing\nexisting_container_name: existing-test-container",
     )
     config.write_text(text, encoding="utf-8")
     environment = {**os.environ, "MANAGER_DRY_RUN": "1"}
@@ -107,7 +108,7 @@ def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):
     )
 
     assert result.stdout.count(
-        "CONTAINER_NAME=glm52-w4a8-mg13-speculator-training"
+        "CONTAINER_NAME=existing-test-container"
     ) == 4
     assert "test-mtp-verifier0.host.log" in result.stdout
 
@@ -212,7 +213,9 @@ def test_yaml_wrapper_uses_docker_exec_for_existing_container(tmp_path: Path):
     _write_user_yaml(config)
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "container_mode: create", "container_mode: existing"
+            "container_mode: create",
+            "container_mode: existing\n"
+            "existing_container_name: existing-test-container",
         ),
         encoding="utf-8",
     )
@@ -230,5 +233,5 @@ def test_yaml_wrapper_uses_docker_exec_for_existing_container(tmp_path: Path):
     )
 
     assert "[container-existing] docker exec" in result.stdout
-    assert "glm52-w4a8-mg13-speculator-training" in result.stdout
+    assert "existing-test-container" in result.stdout
     assert "docker run" not in result.stdout
