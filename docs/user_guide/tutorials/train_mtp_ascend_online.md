@@ -16,6 +16,9 @@ use `--force-generate`. Consequently every later access is a local/shared-file
 cache hit. An explicit `offline` mode is provided for strict resumes; it uses
 `--on-missing raise` and does not pass a vLLM endpoint.
 
+For the Chinese version, see
+[八台 Ascend 910C 在线训练 GLM-5.2 MTP3](train_mtp_ascend_online_zh.md).
+
 ## 1. Fixed environment and model contract
 
 - image: `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
@@ -37,6 +40,73 @@ Expected image packages are `torch_npu==2.10.0.post2`, `vllm==0.23.0`, and
 `vllm-ascend==0.23.0rc1`.
 
 ## 2. Create the shared configuration
+
+### Recommended: configure the cluster from one control host
+
+Set up passwordless SSH from the control host to all eight nodes. If the
+standard model and dataset paths listed below exist, the only required inputs
+are the eight IPs and one Docker container-name prefix:
+
+```bash
+cd /kos_ulan/spec_train/speculators
+bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh configure \
+  --verifier-ips V0,V1,V2,V3 \
+  --trainer-ips T0,T1,T2,T3 \
+  --container-prefix glm52-online-mtp3
+```
+
+The generated shared configuration is:
+
+```text
+/kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+```
+
+The defaults are:
+
+```text
+BF16 MTP initialization model: /kos_ulan/models/GLM-5.2
+training dataset:              /kos_ulan/datasets/glm52-mtp-online
+repository:                    /kos_ulan/spec_train/speculators
+```
+
+Override a non-standard path during `configure` with `--mtp-init-model`,
+`--data-path`, or `--repo-path`. The manager resolves `NIC_NAME` separately on
+each host from its configured IP, so the shared configuration does not require
+a common interface name.
+
+The complete managed workflow is:
+
+```bash
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+bash "$MANAGER" preflight
+bash "$MANAGER" start-verifiers
+bash "$MANAGER" wait-verifiers
+bash "$MANAGER" smoke
+bash "$MANAGER" status
+# After all four smoke containers finish successfully:
+bash "$MANAGER" train
+```
+
+For an offline cache-only resume:
+
+```bash
+bash "$MANAGER" offline
+```
+
+To inspect or stop only containers with this configured prefix:
+
+```bash
+bash "$MANAGER" status
+bash "$MANAGER" stop
+```
+
+The manager never stores an SSH password. Use `SSH_USER`, `SSH_PORT`, and
+`SSH_IDENTITY_FILE` when their defaults are unsuitable.
+
+To inspect every generated remote command without opening SSH sessions or
+starting containers, prefix an operation with `MANAGER_DRY_RUN=1`.
+
+### Manual configuration
 
 ```bash
 cd /kos_ulan/spec_train/speculators
@@ -60,6 +130,9 @@ EPOCHS=5
 
 Use one identical file on all nodes. IPs must be mutually routable and appear
 in `hostname -I`. Use `NODE_IP=<chosen-ip>` for a host with ambiguous IPs.
+
+`NIC_NAME=auto` is supported and resolves the interface from `NODE_IP` on each
+host before Docker starts.
 
 ## 3. Dry-run and smoke test
 
@@ -194,7 +267,19 @@ Success means finite loss, no HCCL or generation error, a completed epoch-1
 validation, a numbered checkpoint, increasing cache file count during epoch
 1, and stable cache count during later epochs.
 
-## 7. Recovery rules
+## 7. Native-MTP inference patch boundary
+
+The online-training verifier in this runbook does not pass
+`--speculative-config`. It runs the target model only to generate layer-78
+hidden states, so it does not construct a native MTP drafter and does not need
+`patch_vllm_glm52_mtp_shared_weights.py`.
+
+Apply that loader patch later in any inference or benchmark container which
+loads native MTP speculative decoding. It is an inference-side requirement,
+not an online-training requirement. See
+[the MG13 ModelSlim diagnosis](glm52_mixed_compressed_tensors.md).
+
+## 8. Recovery rules
 
 - Stop or restart all four trainer nodes together.
 - A normal restart resumes the latest numbered checkpoint.

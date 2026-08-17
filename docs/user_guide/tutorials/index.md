@@ -43,6 +43,11 @@ Learn how to finetune a model's native MTP head on domain-specific data using on
 Run a four-verifier plus four-trainer job whose first epoch caches online
 hidden states and whose later epochs reuse them like offline training.
 
+## [八台 Ascend 910C 在线训练 GLM-5.2 MTP3](train_mtp_ascend_online_zh.md)
+
+中文版生产说明：只填写八台机器 IP 和容器名前缀，统一完成预检、verifier、
+smoke、在线训练、离线恢复、状态检查与停止。
+
 ## [GLM-5.2 MG13 W4A8 on vLLM Ascend](glm52_mixed_compressed_tensors.md)
 
 Prepare a non-destructive ModelSlim runtime view, including native MTP metadata.

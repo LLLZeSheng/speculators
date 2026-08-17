@@ -1,0 +1,116 @@
+import os
+import subprocess
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+MANAGER = REPO_ROOT / "examples/train/manage_mtp_glm52_ascend_online_4v4t.sh"
+WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
+
+
+def test_manager_configure_and_dry_run_topology(tmp_path: Path):
+    config = tmp_path / "cluster.env"
+    subprocess.run(
+        [
+            "bash",
+            str(MANAGER),
+            "configure",
+            "--verifier-ips",
+            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+            "--trainer-ips",
+            "10.0.1.1,10.0.1.2,10.0.1.3,10.0.1.4",
+            "--container-prefix",
+            "test-mtp",
+            "--config",
+            str(config),
+        ],
+        check=True,
+    )
+
+    text = config.read_text(encoding="utf-8")
+    assert "CONTAINER_NAME_PREFIX=test-mtp" in text
+    assert "NIC_NAME=${NIC_NAME:-auto}" in text
+    assert "MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-/kos_ulan/models/GLM-5.2}" in text
+    assert "DATA_PATH=${DATA_PATH:-/kos_ulan/datasets/glm52-mtp-online}" in text
+
+    environment = os.environ.copy()
+    environment["MANAGER_DRY_RUN"] = "1"
+    result = subprocess.run(
+        ["bash", str(MANAGER), "train", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.stdout.count("[ssh]") == 4
+    for rank in range(4):
+        assert f"CONTAINER_NAME=test-mtp-trainer{rank}" in result.stdout
+        assert f"NODE_RANK={rank}" in result.stdout
+        assert f"VERIFIER_HOST=10.0.0.{rank + 1}" in result.stdout
+    assert "MASTER_ADDR=10.0.1.1" in result.stdout
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "offline", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
+
+
+def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
+    result = subprocess.run(
+        [
+            "bash",
+            str(MANAGER),
+            "configure",
+            "--verifier-ips",
+            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+            "--trainer-ips",
+            "10.0.0.1,10.0.1.2,10.0.1.3,10.0.1.4",
+            "--container-prefix",
+            "test-mtp",
+            "--config",
+            str(tmp_path / "cluster.env"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "duplicate node address" in result.stderr
+
+
+def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ip = fake_bin / "ip"
+    fake_ip.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' '2: eth-test    inet 10.0.0.7/24 scope global eth-test'\n",
+        encoding="utf-8",
+    )
+    fake_ip.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "DRY_RUN": "1",
+            "ROLE": "preflight",
+            "LOCAL_IP": "10.0.0.7",
+            "NIC_NAME": "auto",
+            "MTP_INIT_MODEL_PATH": "/kos_ulan/models/GLM-5.2",
+            "DATA_PATH": "/kos_ulan/datasets/glm52-mtp-online",
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(WRAPPER)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert "[network] LOCAL_IP=10.0.0.7 NIC_NAME=eth-test" in result.stdout
+    assert "NIC_NAME=eth-test" in result.stdout

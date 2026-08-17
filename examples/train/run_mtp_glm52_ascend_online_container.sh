@@ -89,6 +89,30 @@ resolve_cluster_role() {
 resolve_cluster_role
 CONTAINER_NAME=${CONTAINER_NAME:-glm52-mtp3-${ROLE}-${VERIFIER_ID:-${NODE_RANK:-0}}}
 
+resolve_nic_name() {
+    if [[ $NIC_NAME != auto ]]; then
+        return
+    fi
+    [[ -n ${LOCAL_IP:-} ]] || \
+        fail "NIC_NAME=auto requires LOCAL_IP or NODE_IP"
+    command -v ip >/dev/null || fail "NIC_NAME=auto requires the host ip command"
+    NIC_NAME=$(
+        ip -o -4 addr show | awk -v target="$LOCAL_IP" '
+            {
+                split($4, address, "/")
+                if (address[1] == target) {
+                    print $2
+                    exit
+                }
+            }
+        '
+    )
+    [[ -n $NIC_NAME ]] || fail "could not resolve NIC for LOCAL_IP=$LOCAL_IP"
+    printf '[network] LOCAL_IP=%s NIC_NAME=%s\n' "$LOCAL_IP" "$NIC_NAME"
+}
+
+resolve_nic_name
+
 case "$ROLE" in
     preflight | verifier | trainer | smoke) ;;
     *) fail "ROLE must be one of: preflight, verifier, trainer, smoke" ;;
