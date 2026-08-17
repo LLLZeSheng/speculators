@@ -233,6 +233,18 @@ bash "$MANAGER" wait-verifiers --config "$CONFIG"
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
 ```
 
+启动 verifier 时会自动执行
+`scripts/patch_vllm_glm52_final_hidden_state.py`。vLLM 0.23 的
+DeepSeek/GLM forward 只在进入 decoder block 前采集辅助状态，循环层号为
+`0..77`；MTP 所需的层号 `78` 表示最后一个 block 后经过 final norm 的输出。
+补丁只补充这一处采集，不修改权重或模型配置，并且可重复执行。原文件备份为
+`deepseek_v2.py.before-glm-final-aux-hidden-state-fix`。如需人工检查或恢复：
+
+```bash
+python scripts/patch_vllm_glm52_final_hidden_state.py --check
+python scripts/patch_vllm_glm52_final_hidden_state.py --restore
+```
+
 verifier 必须使用：
 
 ```text

@@ -364,6 +364,11 @@ run_verifier() {
     validate_verifier_id
     validate_verifier_quantization_mode
     run_preflight --require-vllm
+    # vLLM 0.23's DeepSeek/GLM model does not expose layer id
+    # ``num_hidden_layers`` (the final normalized verifier state).  Apply the
+    # narrow, idempotent compatibility fix before starting HS extraction.
+    run_cmd "$PYTHON_BIN" \
+        "$REPO_ROOT/scripts/patch_vllm_glm52_final_hidden_state.py"
     prepare_verifier_runtime_model
     publish_verifier_metadata
     local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"

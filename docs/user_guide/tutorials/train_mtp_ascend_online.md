@@ -338,6 +338,20 @@ Verifier logs:
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
 ```
 
+Verifier startup automatically runs
+`scripts/patch_vllm_glm52_final_hidden_state.py`. In vLLM 0.23 the
+DeepSeek/GLM forward path samples auxiliary states before decoder blocks
+(`0..77`), while MTP layer id `78` denotes the final normalized output after
+the last block. The narrow patch exposes that state; it changes neither model
+weights nor model configuration and is idempotent. The original source is
+backed up as `deepseek_v2.py.before-glm-final-aux-hidden-state-fix`. To inspect
+or restore it manually:
+
+```bash
+python scripts/patch_vllm_glm52_final_hidden_state.py --check
+python scripts/patch_vllm_glm52_final_hidden_state.py --restore
+```
+
 Trainer logs and checkpoints:
 
 ```text
