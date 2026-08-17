@@ -25,7 +25,7 @@ epoch 2+：读取同一份缓存 → 按离线方式继续训练
 原始 verifier 权重：
   /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 BF16 初始化模型：/kos_ulan/models/GLM-5.2
-训练数据：/kos_ulan/datasets/glm52-mtp-online
+训练数据：/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 ```
 
 BF16 初始化模型必须包含原生 MTP layer。W4A8 verifier 只用于推理和生成
@@ -105,6 +105,28 @@ launcher 会关闭 chunked prefill，因此 batched-token 预算不能小于输�
 每台 verifier 是 DP2 × TP8，满 32K 时实际约可同时 prefill 2 条；其余请求会
 排队。`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
 32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
+
+### 转换约 120 万条 Nuoya 数据
+
+转换脚本会逐个处理 2K/8K 目录中的 JSONL，完成一个分片就写入完成标记；
+中断重跑时会复用已完成分片，最后原子发布一份打乱后的 32K Hugging Face
+Arrow 数据集：
+
+```bash
+cd /kos_ulan/spec_train/speculators
+nohup python scripts/prepare_glm52_nuoya_32k.py \
+  --model /kos_ulan/models/GLM-5.2 \
+  > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
+```
+
+默认输出为：
+
+```text
+/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
+```
+
+输出中的 `conversion_manifest.json` 会记录最终条数、平均长度、P50/P90/P99、
+总 token 数，以及 GLM-5.2 单层 BF16 hidden-state 缓存的预计容量。
 
 ## 3. 一键预检
 

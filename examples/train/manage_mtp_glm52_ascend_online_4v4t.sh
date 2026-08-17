@@ -7,7 +7,7 @@ DEFAULT_CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
 DEFAULT_REPO=/kos_ulan/spec_train/speculators
 DEFAULT_CONTAINER_PREFIX=glm52-mtp3
 DEFAULT_MTP_MODEL=/kos_ulan/models/GLM-5.2
-DEFAULT_DATASET=/kos_ulan/datasets/glm52-mtp-online
+DEFAULT_DATASET=/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 
 usage() {
     cat <<'EOF'

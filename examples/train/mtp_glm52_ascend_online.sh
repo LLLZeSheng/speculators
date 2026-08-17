@@ -18,7 +18,7 @@ VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg1
 # The W4A8C8 verifier is inference-only. This path must point to an unquantized
 # GLM-5.2 checkpoint containing the native MTP layer.
 MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-${SHARED_ROOT}/models/GLM-5.2}
-DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/datasets/glm52-dspark-train}
+DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k}
 HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-${SHARED_ROOT}/spec_train/online_hidden_states/glm52-w4a8c8}
 MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-bf16-mtp3}
 OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp3}

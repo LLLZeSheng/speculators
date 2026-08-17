@@ -31,7 +31,10 @@ def test_manager_configure_and_dry_run_topology(tmp_path: Path):
     assert "CONTAINER_NAME_PREFIX=test-mtp" in text
     assert "NIC_NAME=${NIC_NAME:-auto}" in text
     assert "MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-/kos_ulan/models/GLM-5.2}" in text
-    assert "DATA_PATH=${DATA_PATH:-/kos_ulan/datasets/glm52-mtp-online}" in text
+    assert (
+        "DATA_PATH=${DATA_PATH:-/kos_ulan/lzs/spec_train/dataset/hf/"
+        "nuoya-average2k8k-32k}" in text
+    )
     assert "VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}" in text
     assert "VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32768}" in text
     assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-32768}" in text

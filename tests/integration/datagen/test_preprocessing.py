@@ -1442,6 +1442,20 @@ def test_load_raw_dataset_local_file(tmp_path):
     assert normalize_fn is None
 
 
+def test_load_raw_dataset_local_messages_file_gets_normalizer(tmp_path):
+    data_file = tmp_path / "messages.jsonl"
+    data_file.write_text(
+        '{"messages":[{"role":"user","content":"hello"},'
+        '{"role":"assistant","content":"hi"}]}\n',
+        encoding="utf-8",
+    )
+
+    dataset, normalize_fn = load_raw_dataset(str(data_file))
+
+    assert normalize_fn is not None
+    assert normalize_fn(dataset[0])["conversations"] == dataset[0]["messages"]
+
+
 @pytest.mark.sanity
 def test_load_raw_dataset_local_directory(tmp_path):
     """A directory of .json/.jsonl shards loads as one combined dataset."""

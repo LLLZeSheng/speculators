@@ -121,6 +121,11 @@ def _normalize_conversation(
     return normalized
 
 
+def _normalize_messages_column(example: dict) -> dict:
+    """Accept the common local-JSON ``messages`` spelling."""
+    return {"conversations": example["messages"]}
+
+
 def _adapt_part_for_hf(part: str | dict, processor: ProcessorLike):
     if isinstance(part, str) and isinstance(processor, ProcessorMixin):
         return {"type": "text", "text": part}
@@ -764,7 +769,14 @@ def load_raw_dataset(
     """
     # 1. Local file
     if train_data_path.endswith((".jsonl", ".json")):
-        return load_dataset("json", data_files=train_data_path, split="train"), None
+        dataset = load_dataset("json", data_files=train_data_path, split="train")
+        normalize_fn = (
+            _normalize_messages_column
+            if "messages" in dataset.column_names
+            and "conversations" not in dataset.column_names
+            else None
+        )
+        return dataset, normalize_fn
 
     # 2. Local directory
     path = Path(train_data_path)

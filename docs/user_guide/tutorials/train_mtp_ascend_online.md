@@ -65,7 +65,7 @@ The defaults are:
 
 ```text
 BF16 MTP initialization model: /kos_ulan/models/GLM-5.2
-training dataset:              /kos_ulan/datasets/glm52-mtp-online
+training dataset:              /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 repository:                    /kos_ulan/spec_train/speculators
 training context:              32768 tokens
 verifier model length:         32769 tokens
@@ -117,6 +117,24 @@ The manager never stores an SSH password. Use `SSH_USER`, `SSH_PORT`, and
 
 To inspect every generated remote command without opening SSH sessions or
 starting containers, prefix an operation with `MANAGER_DRY_RUN=1`.
+
+### Prepare the 1.2M Nuoya mixture
+
+The resumable converter processes each JSONL independently before publishing
+one shuffled 32K Hugging Face dataset. Completed staging shards are reused
+after interruption:
+
+```bash
+cd /kos_ulan/spec_train/speculators
+nohup python scripts/prepare_glm52_nuoya_32k.py \
+  --model /kos_ulan/models/GLM-5.2 \
+  > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
+```
+
+Its default sources are `average-2k-nuoya` and `average-8k`, and its output is
+`/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k`. The output
+`conversion_manifest.json` records row count, length percentiles, total token
+count, and the estimated BF16 hidden-state cache size for one 6144-wide layer.
 
 ### Manual configuration
 
