@@ -46,7 +46,8 @@ verifier_dp_size: 2
 verifier_tp_size: 8
 verifier_max_model_len: 32769
 verifier_max_num_seqs: 8
-verifier_max_batched_tokens: 32769
+# TP8 sequence parallel pads 32769 to the next multiple of 8.
+verifier_max_batched_tokens: 32776
 total_seq_len: 32768
 request_timeout: 900
 max_retries: 3

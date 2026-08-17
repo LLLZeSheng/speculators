@@ -233,6 +233,15 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError(
             "verifier_max_batched_tokens must be at least verifier_max_model_len"
         )
+    if (
+        numbers["verifier_max_batched_tokens"]
+        % numbers["verifier_tp_size"]
+        != 0
+    ):
+        raise ValueError(
+            "verifier_max_batched_tokens must be a multiple of verifier_tp_size "
+            "for Ascend sequence-parallel padding"
+        )
     if config.get("trainer_mode") not in {"smoke", "trainer"}:
         raise ValueError("trainer_mode must be smoke or trainer")
     if config.get("trainer_data_mode") not in {"online-cache", "offline"}:
