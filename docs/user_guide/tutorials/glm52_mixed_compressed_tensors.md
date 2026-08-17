@@ -147,6 +147,40 @@ reports the critical shared parameters separately for this reason. See the
 upstream GLM missing-shared-weight report:
 [vllm-project/vllm-ascend#6754](https://github.com/vllm-project/vllm-ascend/issues/6754).
 
+### Fix missing shared embedding/head routing
+
+If the audit reports both layer-local shared weights as missing and native MTP
+acceptance remains exactly zero, patch the installed vLLM loader inside the
+serving container:
+
+```bash
+python scripts/patch_vllm_glm52_mtp_shared_weights.py
+python scripts/patch_vllm_glm52_mtp_shared_weights.py --check
+```
+
+The patch routes `model.embed_tokens.weight` and `lm_head.weight` before the
+generic MTP loader discards non-layer keys. It also adds a mandatory post-load
+check, so an uninitialized draft embedding or logits head fails startup instead
+of silently producing zero acceptance. The script is idempotent and creates:
+
+```text
+/vllm-workspace/vllm/vllm/model_executor/models/deepseek_mtp.py.before-glm-mtp-shared-weight-fix
+```
+
+Stop all old vLLM workers and start the service again after applying it. To
+restore the original source:
+
+```bash
+python scripts/patch_vllm_glm52_mtp_shared_weights.py --restore
+```
+
+For an image with a different source location, pass the explicit file:
+
+```bash
+python scripts/patch_vllm_glm52_mtp_shared_weights.py \
+  --target /path/to/vllm/model_executor/models/deepseek_mtp.py
+```
+
 ## Related upstream work
 
 [vllm-project/vllm-ascend#5889](https://github.com/vllm-project/vllm-ascend/pull/5889)
