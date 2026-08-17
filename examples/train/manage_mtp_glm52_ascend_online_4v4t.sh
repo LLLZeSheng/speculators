@@ -268,8 +268,11 @@ stop_role() {
             local pid_file="$LOG_ROOT/runtime_pids/$container.$role$index.pid"
             local stop_command
             stop_command="docker exec $(quote "$container") bash -lc "
-            stop_command+=$(quote "if [[ -f $pid_file ]]; then pid=\$(cat $pid_file); kill -TERM \"\$pid\" 2>/dev/null || true; fi")
-            remote "$host" "$stop_command" || true
+            stop_command+=$(quote "if [[ -f $pid_file ]]; then pid=\$(cat $pid_file); if [[ \$pid =~ ^[0-9]+$ ]] && kill -0 \"\$pid\" 2>/dev/null; then kill -TERM \"\$pid\"; for ((i=0; i<180; i++)); do kill -0 \"\$pid\" 2>/dev/null || break; sleep 1; done; if kill -0 \"\$pid\" 2>/dev/null; then echo 'ERROR: job did not stop within 180 seconds: pid='\"\$pid\" >&2; exit 1; fi; fi; rm -f -- $pid_file; fi")
+            if ! remote "$host" "$stop_command"; then
+                printf 'WARNING: graceful stop did not complete: host=%s container=%s\n' \
+                    "$host" "$container" >&2
+            fi
         else
             remote "$host" \
                 "docker stop -t 30 $(quote "$container") >/dev/null 2>&1 || true" || true
