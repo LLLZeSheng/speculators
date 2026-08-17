@@ -168,6 +168,11 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 `create` 模式不带 `--rm`，与给出的手工命令一致。停止后的同名容器仍会
 保留；再次创建前需要人工确认并删除旧容器，或者切换到 `existing` 模式。
 
+在 `existing` 模式下，manager 的 `stop` 会先按照 PID 文件优雅停止本集群
+记录的 verifier、trainer 和 smoke 任务，然后在八台机器上分别对复用容器
+执行一次 `docker restart -t 30`。容器不会被删除，但其中残留的 NPU worker
+和进程内状态会被清理。因此不要让与本训练无关的服务共用这些容器。
+
 ### 容器内实际执行什么
 
 不需要人工进入任何容器操作：

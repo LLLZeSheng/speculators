@@ -150,6 +150,27 @@ def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):
     assert "test-mtp-verifier0.host.log" in result.stdout
 
 
+def test_manager_stop_restarts_each_existing_container_once(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    text = config.read_text(encoding="utf-8").replace(
+        "container_mode: create",
+        "container_mode: existing\nexisting_container_name: existing-test-container",
+    )
+    config.write_text(text, encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "stop", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MANAGER_DRY_RUN": "1"},
+    )
+
+    assert result.stdout.count("[restart]") == 8
+    assert result.stdout.count("docker\\ restart") == 8
+
+
 def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
     _write_user_yaml(config)

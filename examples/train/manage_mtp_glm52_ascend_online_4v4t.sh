@@ -25,7 +25,7 @@ Commands:
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
   status           Show matching containers and recent host-wrapper logs.
-  stop             Stop this cluster's verifier/trainer containers.
+  stop             Stop cluster jobs; restart reused containers in existing mode.
 
 Options:
   --config FILE    User-maintained YAML. Default:
@@ -280,10 +280,33 @@ stop_role() {
     done
 }
 
+restart_existing_containers() {
+    [[ $CONTAINER_MODE == existing ]] || return 0
+
+    local role addresses_name index host container
+    for role in verifier trainer; do
+        if [[ $role == verifier ]]; then
+            addresses_name=CLUSTER_VERIFIER_IPS
+        else
+            addresses_name=CLUSTER_TRAINER_IPS
+        fi
+        local -n addresses=$addresses_name
+        for index in "${!addresses[@]}"; do
+            host=${addresses[$index]}
+            container=$(container_for "$role" "$index")
+            printf '[restart] host=%s container=%s\n' "$host" "$container"
+            remote "$host" \
+                "docker restart -t 30 $(quote "$container") >/dev/null"
+        done
+        unset -n addresses
+    done
+}
+
 stop_cluster() {
     stop_role verifier CLUSTER_VERIFIER_IPS
     stop_role trainer CLUSTER_TRAINER_IPS
     stop_role smoke CLUSTER_TRAINER_IPS
+    restart_existing_containers
 }
 
 COMMAND=${1:-}

@@ -91,8 +91,11 @@ nohup, so it intentionally omits terminal-only `-it`.
 Set `container_mode: existing` to reuse one already-running container with the
 configured `existing_container_name` on every host. In this mode the wrapper
 uses `docker exec`; image, shm, device, and mount settings must already be
-correct on that container. The manager's `stop` command terminates only the
-tracked MTP process and never stops or removes the reused container.
+correct on that container. The manager's `stop` command first terminates all
+tracked MTP processes and then runs `docker restart -t 30` once for the reused
+container on each of the eight hosts. It never removes the reused containers.
+This clears stale NPU workers and process-local state; services unrelated to
+this workflow must therefore not share those containers.
 
 If a pre-created container mounts only `/kos_ulan:/kos_ulan` and therefore has
 no `/workspace/speculators`, set both `repo_path` and `container_repo_path` to
