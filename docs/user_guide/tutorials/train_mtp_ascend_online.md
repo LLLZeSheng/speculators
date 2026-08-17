@@ -241,6 +241,12 @@ behavior deterministic:
   trainer then starts the 64-rank `torchrun` job;
 - all roles use the same configured vLLM-Ascend image.
 
+Trainer ranks serialize the initial verifier embedding/head read through the
+host-local lock `/tmp/speculators-glm52-verifier-weights.lock`. This prevents
+16 ranks from faulting the same SFS-backed safetensors pages concurrently; the
+first rank warms the page cache and the remaining ranks load in turn. The lock
+is advisory and is automatically released if its owning process exits.
+
 This is a required compatibility rule: vLLM 0.23 in the image requires
 `setuptools<81`, while this repository's editable build isolation requires
 `setuptools>=82`. Do not upgrade setuptools in the serving image merely to

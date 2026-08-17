@@ -1,4 +1,7 @@
+import fcntl
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +120,33 @@ def list_checkpoint_keys(checkpoint_dir: str | Path) -> list[str]:
     )
 
 
+@contextmanager
+def local_weight_load_lock():
+    """Serialize large verifier tensor loads within one host container.
+
+    Concurrent safetensors copies from a shared filesystem can leave every
+    local training rank blocked in ``lock_page``.  A host-local advisory lock
+    lets the first rank populate the page cache before the remaining ranks
+    copy the same embedding/head tensors.  No lock is used unless explicitly
+    enabled by ``SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK``.
+    """
+    lock_path = os.environ.get("SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK")
+    if not lock_path:
+        yield
+        return
+
+    path = Path(lock_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as lock_file:
+        logger.info("Waiting for local verifier-weight load lock: {}", path)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            logger.info("Acquired local verifier-weight load lock: {}", path)
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def load_model_layers(
     layer_names: list[str], model_path: str
 ) -> dict[str, torch.Tensor]:
@@ -130,6 +160,13 @@ def load_model_layers(
     containing model.safetensors.index
     :return: dict mapping input names/patterns to loaded tensors
     """
+    return _load_model_layers_unlocked(layer_names, model_path)
+
+
+def _load_model_layers_unlocked(
+    layer_names: list[str], model_path: str
+) -> dict[str, torch.Tensor]:
+    """Implementation of :func:`load_model_layers` with no host-local lock."""
     # download the index file or build weight map for single-file models
     local_index = find_local_safetensors_index(model_path)
     try:

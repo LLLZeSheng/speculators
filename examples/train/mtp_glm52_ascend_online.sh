@@ -100,6 +100,10 @@ if [[ -n $LOCAL_IP ]]; then
     export VLLM_HOST_IP=$LOCAL_IP
 fi
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT/hs_connectors/src:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# All 16 local ranks need the same multi-gigabyte verifier embedding/head.
+# Serialize the SFS-backed mmap/copy so one rank warms the host page cache
+# instead of leaving every rank blocked in lock_page concurrently.
+export SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK=${SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK:-/tmp/speculators-glm52-verifier-weights.lock}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2

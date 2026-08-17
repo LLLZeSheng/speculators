@@ -35,6 +35,7 @@ def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
     assert '"enable_balance_scheduling":true' not in text
     assert '"enable_dsa_cp":true' in text
     assert '"enable_sparse_li_c8":true' in text
+    assert "SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK" in text
 
 
 def test_verifier_maps_local_ip_to_vllm_host_ip(tmp_path: Path):

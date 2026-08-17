@@ -128,6 +128,18 @@ class DraftVocabMixin(nn.Module):
         is True. Subclasses can override to load additional weights (e.g. norms,
         tokenizer) by calling super().load_verifier_weights() first.
         """
+        from speculators.utils.loading import (  # noqa: PLC0415
+            local_weight_load_lock,
+        )
+
+        # Keep the lock through load_state_dict: tensors returned by
+        # safetensors may remain mmap-backed, so the costly page faults happen
+        # while copying them into module parameters rather than at file open.
+        with local_weight_load_lock():
+            self._load_verifier_weights_unlocked()
+
+    def _load_verifier_weights_unlocked(self):  # noqa: C901
+        """Load and copy verifier tensors while holding any local load lock."""
         import warnings  # noqa: PLC0415
 
         from speculators.utils.loading import load_model_layers  # noqa: PLC0415

@@ -195,6 +195,11 @@ editable build isolation 要求 `setuptools>=82`。不要为了 editable 安装�
 `install_speculators_trainer`。
 - 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
 
+trainer 首次加载 verifier 的 embedding/head 时，会使用每台容器本地的
+`/tmp/speculators-glm52-verifier-weights.lock` 将16个rank串行化。第一个rank
+从SFS读取并预热本机页缓存，后续rank依次加载，避免所有进程同时陷入
+`D/lock_page`。持锁进程退出时内核会自动释放该建议锁。
+
 因此你的理解基本正确，但 trainer 也不需要手工进入容器执行 pip，包装脚本会
 自动完成。只有使用自制镜像且已经预装代码时，才建议把 trainer 开关改为
 `false`。
