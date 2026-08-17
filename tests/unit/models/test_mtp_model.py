@@ -248,6 +248,7 @@ def test_glm_moe_dsa_forward_uses_native_sparse_layer(seed, monkeypatch, tmp_pat
         ),
     )
     model = MTPDraftModel(config)
+    assert not hasattr(model, "verifier_lm_head")
     assert model.config.transformer_layer_config._attn_implementation == "sdpa"
     nn.init.normal_(model.embed_tokens.weight, std=0.02)
     nn.init.normal_(model.lm_head.weight, std=0.02)

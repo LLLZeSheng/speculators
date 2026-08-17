@@ -105,6 +105,11 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             )
         super().__init__(config=config)
         self._init_vocab(config)
+        # MTP never consumes verifier_lm_head in forward.  Do not keep a third
+        # full-vocabulary matrix around until load_verifier_weights(): for GLM
+        # 5.2 this otherwise wastes roughly 1.8 GiB per BF16 process and can
+        # exhaust host memory while many local FSDP ranks initialize together.
+        del self.verifier_lm_head
         if self.use_draft_vocab:
             raise NotImplementedError(
                 "Vocab reduction is not supported for MTP speculators"
@@ -140,7 +145,6 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         if self.config.transformer_layer_config.model_type == "glm_moe_dsa":
             for parameter in self.mtp_layers[0].self_attn.indexer.parameters():
                 parameter.requires_grad_(False)
-        del self.verifier_lm_head
 
     # requires `dynamic=False`. See #876
     @conditional_torch_compile(dynamic=False)

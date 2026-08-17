@@ -193,11 +193,17 @@ class DraftVocabMixin(nn.Module):
 
         if self.lm_head.weight.isnan().any():
             self.lm_head.load_state_dict(
-                {"weight": lm_head_weight.detach().clone()}, strict=False
+                {"weight": lm_head_weight.detach()}, strict=False
             )
-        self.verifier_lm_head.load_state_dict(
-            {"weight": lm_head_weight.detach().clone()}, strict=False
-        )
+        # Some algorithms (notably MTP) do not use a separate verifier head and
+        # remove it during construction.  Avoid materializing another full-vocab
+        # matrix for those models.  ``load_state_dict`` already copies into the
+        # destination parameter, so an explicit clone only creates a very large
+        # temporary allocation.
+        if hasattr(self, "verifier_lm_head"):
+            self.verifier_lm_head.load_state_dict(
+                {"weight": lm_head_weight.detach()}, strict=False
+            )
 
         # Load verifier norm weights if the model has verifier_norm
         if hasattr(self, "verifier_norm"):
@@ -217,7 +223,8 @@ class DraftVocabMixin(nn.Module):
         # Re-freeze verifier weights that should never be trained.
         self.embed_tokens.weight.requires_grad_(False)
         self.lm_head.weight.requires_grad_(False)
-        self.verifier_lm_head.weight.requires_grad_(False)
+        if hasattr(self, "verifier_lm_head"):
+            self.verifier_lm_head.weight.requires_grad_(False)
         if hasattr(self, "verifier_norm"):
             self.verifier_norm.weight.requires_grad_(False)  # type: ignore[union-attr]
 
