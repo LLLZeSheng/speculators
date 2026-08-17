@@ -48,8 +48,8 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
     embed_tokens and lm_head are managed by DraftVocabMixin — initialized
     to NaN, populated via load_verifier_weights() (called automatically by
     from_pretrained), and excluded from saved checkpoints.
-    verifier_lm_head is created by DraftVocabMixin but not used in
-    the MTP forward pass.
+    MTP does not create verifier_lm_head because it is not used in the forward
+    pass.  Legacy converted checkpoints may still contain that key.
     """
 
     config_class: ClassVar[type[MTPSpeculatorConfig]] = MTPSpeculatorConfig  # type: ignore[misc]
@@ -57,6 +57,7 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
     _keys_to_ignore_on_save: ClassVar[list[str]] = [  # type: ignore[misc,assignment]
         "embed_tokens.weight",
         "lm_head.weight",
+        "verifier_lm_head.weight",
     ]
     _keys_to_ignore_on_load_missing: ClassVar[list[str]] = [  # type: ignore[misc]
         "embed_tokens.weight",
@@ -64,6 +65,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         "verifier_lm_head.weight",
         "t2d",
         "d2t",
+    ]
+    _keys_to_ignore_on_load_unexpected: ClassVar[list[str]] = [  # type: ignore[misc]
+        "verifier_lm_head.weight",
     ]
 
     t2d: torch.Tensor | None

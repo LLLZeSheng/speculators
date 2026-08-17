@@ -324,3 +324,9 @@ def test_save_ignore_keys_are_ignored_on_load_missing(model_class):
         "checkpoints but does not list them in _keys_to_ignore_on_load_missing; "
         "loading a checkpoint will raise on the absent key(s)."
     )
+
+
+def test_mtp_ignores_legacy_verifier_head_on_load():
+    """Old MTP conversions saved an unused full-vocabulary verifier head."""
+    ignored = set(MTPDraftModel._keys_to_ignore_on_load_unexpected)
+    assert "verifier_lm_head.weight" in ignored
