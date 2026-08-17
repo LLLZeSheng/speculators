@@ -129,7 +129,8 @@ per-device activation headroom on 61 GiB NPUs; each verifier node runs one
 full 32K prefill at a time and additional requests queue. The memory-safe
 profile uses `VERIFIER_MAX_NUM_SEQS=1`, eager execution, and disables
 shared-expert multistream overlap to preserve activation headroom on 61 GiB
-NPUs.
+NPUs. It uses `PYTORCH_NPU_ALLOC_CONF=max_split_size_mb:64`; torch_npu does
+not allow `max_split_size_mb` and `expandable_segments` simultaneously.
 
 Set non-standard paths directly in YAML. With `nic_name: auto`, the wrapper
 resolves the interface separately on each host from its configured IP.

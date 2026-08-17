@@ -115,9 +115,10 @@ parallel 会把 profile token 数向上补齐到 16 的倍数，因此 batched-t
 上限并触发断言。
 每台 verifier 是 DP1 × TP16，满 32K 时实际运行 1 条；其余请求会排队。
 TP16 为 61 GiB NPU 留出足够的模型分片和 32K profile 激活空间。
-`MAX_NUM_SEQS=1`、eager 模式以及关闭 shared-expert 多流重叠用于给 61 GiB
-NPU 留出 32K prefill 激活空间。900 秒超时用于覆盖长 prefill、排队和
-hidden-state 写盘时间。
+`MAX_NUM_SEQS=1`、eager 模式、关闭 shared-expert 多流重叠以及
+`PYTORCH_NPU_ALLOC_CONF=max_split_size_mb:64` 用于给 61 GiB NPU 留出 32K
+prefill 激活空间。`expandable_segments` 不能与 `max_split_size_mb` 同时启用。
+900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
 
 YAML 同时明确记录容器行为：
 
