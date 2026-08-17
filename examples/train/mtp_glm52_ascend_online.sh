@@ -300,46 +300,52 @@ preflight_args() {
 publish_verifier_metadata() {
     local marker="$VERIFIER_METADATA_PATH/.ready"
     if [[ $DRY_RUN == 1 ]]; then
-        printf '[metadata] publish verifier config/tokenizer to %s\n' \
-            "$VERIFIER_METADATA_PATH"
+        if [[ $VERIFIER_ID == 0 ]]; then
+            printf '[metadata] verifier0 publishes config/tokenizer to %s\n' \
+                "$VERIFIER_METADATA_PATH"
+        else
+            printf '[metadata] verifier%s waits for %s\n' \
+                "$VERIFIER_ID" "$marker"
+        fi
+        return
+    fi
+    if [[ $VERIFIER_ID != 0 ]]; then
+        wait_for_marker "$marker" "verifier metadata published by verifier0"
         return
     fi
     mkdir -p "$(dirname -- "$VERIFIER_METADATA_PATH")"
-    (
-        flock -x 9
-        if [[ -f $marker ]]; then
-            local existing
-            for existing in "$VERIFIER_METADATA_PATH"/*; do
-                [[ -f $existing ]] || continue
-                [[ ${existing##*/} == .ready ]] && continue
-                [[ -f $VERIFIER_MODEL_PATH/${existing##*/} ]] || \
-                    fail "published verifier metadata is stale: ${existing##*/}"
-                cmp -s -- "$existing" "$VERIFIER_MODEL_PATH/${existing##*/}" || \
-                    fail "published verifier metadata differs: ${existing##*/}"
-            done
-            exit 0
-        fi
-        [[ ! -e $VERIFIER_METADATA_PATH ]] || \
-            fail "$VERIFIER_METADATA_PATH exists without .ready; inspect it manually"
-        local temporary="${VERIFIER_METADATA_PATH}.tmp.${HOSTNAME}.$$"
-        trap 'rm -rf -- "$temporary"' EXIT
-        mkdir -p "$temporary"
-        local filename
-        for filename in config.json tokenizer.json tokenizer.model \
-            tokenizer_config.json special_tokens_map.json added_tokens.json; do
-            if [[ -f $VERIFIER_MODEL_PATH/$filename ]]; then
-                cp -- "$VERIFIER_MODEL_PATH/$filename" "$temporary/$filename"
-            fi
+    if [[ -f $marker ]]; then
+        local existing
+        for existing in "$VERIFIER_METADATA_PATH"/*; do
+            [[ -f $existing ]] || continue
+            [[ ${existing##*/} == .ready ]] && continue
+            [[ -f $VERIFIER_MODEL_PATH/${existing##*/} ]] || \
+                fail "published verifier metadata is stale: ${existing##*/}"
+            cmp -s -- "$existing" "$VERIFIER_MODEL_PATH/${existing##*/}" || \
+                fail "published verifier metadata differs: ${existing##*/}"
         done
-        [[ -f $temporary/config.json ]] || \
-            fail "verifier config.json was not copied from $VERIFIER_MODEL_PATH"
-        if [[ ! -f $temporary/tokenizer.json && ! -f $temporary/tokenizer.model ]]; then
-            fail "verifier tokenizer assets were not copied from $VERIFIER_MODEL_PATH"
+        return
+    fi
+    [[ ! -e $VERIFIER_METADATA_PATH ]] || \
+        fail "$VERIFIER_METADATA_PATH exists without .ready; inspect it manually"
+    local temporary="${VERIFIER_METADATA_PATH}.tmp.${HOSTNAME}.$$"
+    trap 'rm -rf -- "$temporary"' EXIT
+    mkdir -p "$temporary"
+    local filename
+    for filename in config.json tokenizer.json tokenizer.model \
+        tokenizer_config.json special_tokens_map.json added_tokens.json; do
+        if [[ -f $VERIFIER_MODEL_PATH/$filename ]]; then
+            cp -- "$VERIFIER_MODEL_PATH/$filename" "$temporary/$filename"
         fi
-        touch "$temporary/.ready"
-        mv -- "$temporary" "$VERIFIER_METADATA_PATH"
-        trap - EXIT
-    ) 9>"${VERIFIER_METADATA_PATH}.lock"
+    done
+    [[ -f $temporary/config.json ]] || \
+        fail "verifier config.json was not copied from $VERIFIER_MODEL_PATH"
+    if [[ ! -f $temporary/tokenizer.json && ! -f $temporary/tokenizer.model ]]; then
+        fail "verifier tokenizer assets were not copied from $VERIFIER_MODEL_PATH"
+    fi
+    touch "$temporary/.ready"
+    mv -- "$temporary" "$VERIFIER_METADATA_PATH"
+    trap - EXIT
 }
 
 run_preflight() {
@@ -412,7 +418,7 @@ wait_for_marker() {
 prepare_mtp_draft() {
     local marker="$MTP_DRAFT_PATH/.ready"
     if [[ $DRY_RUN == 1 ]]; then
-        print_cmd flock "${MTP_DRAFT_PATH}.lock" "$PYTHON_BIN" -m speculators \
+        print_cmd "$PYTHON_BIN" -m speculators \
             convert "$MTP_INIT_MODEL_PATH" --algorithm mtp \
             --verifier "$MTP_INIT_MODEL_PATH" --output-path "$MTP_DRAFT_PATH" \
             --algorithm-kwargs '{"num_speculative_steps":3}'
@@ -421,7 +427,6 @@ prepare_mtp_draft() {
     if [[ $NODE_RANK == 0 ]]; then
         mkdir -p "$(dirname -- "$MTP_DRAFT_PATH")"
         (
-            flock -x 9
             if [[ -f $marker ]]; then
                 exit 0
             fi
@@ -434,10 +439,10 @@ prepare_mtp_draft() {
                 --verifier "$MTP_INIT_MODEL_PATH" \
                 --output-path "$temporary" \
                 --algorithm-kwargs '{"num_speculative_steps":3}'
+            touch "$temporary/.ready"
             mv -- "$temporary" "$MTP_DRAFT_PATH"
-            touch "$marker"
             trap - EXIT
-        ) 9>"${MTP_DRAFT_PATH}.lock"
+        )
     else
         wait_for_marker "$marker" "native floating-point MTP initialization"
     fi
@@ -447,7 +452,7 @@ prepare_smoke_data() {
     local marker="$SMOKE_DATA_PATH/.ready"
     printf 'Prepare smoke dataset (%s samples): %s\n' \
         "$SMOKE_SAMPLES" "$SMOKE_DATA_PATH"
-    local code='from datasets import load_from_disk; import os, sys; src, dst, count = sys.argv[1], sys.argv[2], int(sys.argv[3]); data = load_from_disk(src); tmp = dst + ".tmp." + str(os.getpid()); data.select(range(min(count, len(data)))).save_to_disk(tmp); os.rename(tmp, dst); open(os.path.join(dst, ".ready"), "w").close()'
+    local code='from datasets import load_from_disk; import os, sys; src, dst, count = sys.argv[1], sys.argv[2], int(sys.argv[3]); data = load_from_disk(src); tmp = dst + ".tmp." + str(os.getpid()); data.select(range(min(count, len(data)))).save_to_disk(tmp); open(os.path.join(tmp, ".ready"), "w").close(); os.rename(tmp, dst)'
     if [[ $DRY_RUN == 1 ]]; then
         print_cmd "$PYTHON_BIN" -c "$code" "$DATA_PATH" "$SMOKE_DATA_PATH" \
             "$SMOKE_SAMPLES"
@@ -455,15 +460,12 @@ prepare_smoke_data() {
     fi
     if [[ $NODE_RANK == 0 ]]; then
         mkdir -p "$(dirname -- "$SMOKE_DATA_PATH")"
-        (
-            flock -x 9
-            if [[ ! -f $marker ]]; then
-                [[ ! -e $SMOKE_DATA_PATH ]] || \
-                    fail "$SMOKE_DATA_PATH exists without .ready; inspect it manually"
-                "$PYTHON_BIN" -c "$code" "$DATA_PATH" "$SMOKE_DATA_PATH" \
-                    "$SMOKE_SAMPLES"
-            fi
-        ) 9>"${SMOKE_DATA_PATH}.lock"
+        if [[ ! -f $marker ]]; then
+            [[ ! -e $SMOKE_DATA_PATH ]] || \
+                fail "$SMOKE_DATA_PATH exists without .ready; inspect it manually"
+            "$PYTHON_BIN" -c "$code" "$DATA_PATH" "$SMOKE_DATA_PATH" \
+                "$SMOKE_SAMPLES"
+        fi
     else
         wait_for_marker "$marker" "smoke dataset"
     fi
