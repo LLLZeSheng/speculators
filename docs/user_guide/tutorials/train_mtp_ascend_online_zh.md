@@ -129,7 +129,7 @@ container_mounts:
   - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
   - /root/.cache:/root/.cache
 install_speculators_verifier: false
-install_speculators_trainer: true
+install_speculators_trainer: false
 ```
 
 `container_mode: create` 不需要、也不应填写 `existing_container_name`。
@@ -167,11 +167,15 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 
 不需要人工进入任何容器操作：
 
-- verifier：不执行 pip install。代码位于 `/kos_ulan/lzs/spec_train/speculators`，启动
-  脚本设置 `PYTHONPATH` 后直接拉起 hidden-state vLLM 服务；
-- trainer/smoke：容器启动时自动执行
-  `python -m pip install --no-build-isolation --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`，
-  随后进入四机 64-rank `torchrun`；
+- verifier、trainer 和 smoke 均不执行 pip install。启动脚本把
+  `/kos_ulan/lzs/spec_train/speculators/src` 和
+  `/kos_ulan/lzs/spec_train/speculators/hs_connectors/src` 加入
+  `PYTHONPATH`；trainer 随后直接进入四机 64-rank `torchrun`。
+
+这是必需的兼容策略：镜像内 vLLM 0.23 要求 `setuptools<81`，而仓库的
+editable build isolation 要求 `setuptools>=82`。不要为了 editable 安装升级
+容器内 setuptools。只有自定义镜像已解决该版本约束时，才可以显式打开
+`install_speculators_trainer`。
 - 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
 
 因此你的理解基本正确，但 trainer 也不需要手工进入容器执行 pip，包装脚本会

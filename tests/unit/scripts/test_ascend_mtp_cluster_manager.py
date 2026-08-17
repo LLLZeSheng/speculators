@@ -52,7 +52,7 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     assert "- /mnt/xds/sfs:/mnt/xds/sfs" in text
     assert "- /root/.cache:/root/.cache" in text
     assert "install_speculators_verifier: false" in text
-    assert "install_speculators_trainer: true" in text
+    assert "install_speculators_trainer: false" in text
 
     result = subprocess.run(
         ["bash", str(MANAGER), "validate-config", "--config", str(config)],
@@ -178,7 +178,7 @@ def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
     assert "--shm-size 1g" in result.stdout
 
 
-def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
+def test_yaml_wrapper_skips_install_for_all_default_roles(
     tmp_path: Path,
 ):
     config = tmp_path / "cluster.yaml"
@@ -204,7 +204,7 @@ def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
         capture_output=True,
         text=True,
     )
-    assert "INSTALL_SPECULATORS=1" in trainer.stdout
+    assert "INSTALL_SPECULATORS=0" in trainer.stdout
     assert "run_mtp_glm52_ascend_online_job.sh" in trainer.stdout
 
 

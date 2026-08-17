@@ -55,7 +55,8 @@ trainer_mode: smoke
 trainer_data_mode: online-cache
 smoke_run_id: FILL_UNIQUE_SMOKE_ID
 
-# No interactive action is required in either role.  The host wrapper performs
-# the trainer editable installation automatically and skips it for verifiers.
+# The launcher exports both source trees through PYTHONPATH. Keep editable pip
+# installation disabled because vLLM 0.23 requires setuptools<81 while this
+# repository's build isolation requires setuptools>=82.
 install_speculators_verifier: false
-install_speculators_trainer: true
+install_speculators_trainer: false

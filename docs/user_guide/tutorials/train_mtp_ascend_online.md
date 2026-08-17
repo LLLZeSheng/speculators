@@ -201,7 +201,7 @@ trainer_mode: smoke
 trainer_data_mode: online-cache
 epochs: 5
 install_speculators_verifier: false
-install_speculators_trainer: true
+install_speculators_trainer: false
 ```
 
 Use one identical file on all nodes. IPs must be mutually routable and appear
@@ -220,13 +220,17 @@ host before Docker starts.
 No interactive container setup is required. The host wrapper makes the role
 behavior deterministic:
 
-- verifier: does not run pip; the repository is bind-mounted at
-  `/kos_ulan/lzs/spec_train/speculators`, and `PYTHONPATH` is set before starting the
-  hidden-state vLLM service;
-- trainer/smoke: automatically runs
-  `python -m pip install --no-build-isolation --no-deps -e /kos_ulan/lzs/spec_train/speculators/hs_connectors -e /kos_ulan/lzs/spec_train/speculators`,
-  then starts the 64-rank `torchrun` job;
+- verifier, trainer, and smoke do not run pip. The launcher adds both
+  `/kos_ulan/lzs/spec_train/speculators/src` and
+  `/kos_ulan/lzs/spec_train/speculators/hs_connectors/src` to `PYTHONPATH`;
+  trainer then starts the 64-rank `torchrun` job;
 - all roles use the same configured vLLM-Ascend image.
+
+This is a required compatibility rule: vLLM 0.23 in the image requires
+`setuptools<81`, while this repository's editable build isolation requires
+`setuptools>=82`. Do not upgrade setuptools in the serving image merely to
+perform an editable install. Enable `install_speculators_trainer` only for a
+custom image where that packaging constraint has been resolved.
 
 The two installation switches live in YAML and may be overridden for a custom
 image. Leave the verifier switch false unless its image lacks imports needed

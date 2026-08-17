@@ -144,7 +144,7 @@ esac
 if [[ $INSTALL_SPECULATORS == auto ]]; then
     case "$ROLE" in
         trainer | smoke)
-            INSTALL_SPECULATORS=${INSTALL_SPECULATORS_TRAINER:-1}
+            INSTALL_SPECULATORS=${INSTALL_SPECULATORS_TRAINER:-0}
             ;;
         verifier | preflight)
             INSTALL_SPECULATORS=${INSTALL_SPECULATORS_VERIFIER:-0}
