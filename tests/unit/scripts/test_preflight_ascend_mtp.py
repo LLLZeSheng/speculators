@@ -242,6 +242,24 @@ def test_validate_dataset_rejects_missing_column(tmp_path):
         preflight.validate_dataset(dataset_path)
 
 
+def test_parse_args_allows_verifier_to_skip_dataset_check():
+    args = preflight.parse_args(
+        [
+            "--mtp-model",
+            "/model",
+            "--verifier-model",
+            "/model",
+            "--data-path",
+            "/dataset-still-building",
+            "--hidden-states-path",
+            "/hidden-states",
+            "--skip-dataset-check",
+        ]
+    )
+
+    assert args.skip_dataset_check is True
+
+
 def test_validate_shared_directory_writes_probe(tmp_path):
     shared = tmp_path / "hidden_states"
 

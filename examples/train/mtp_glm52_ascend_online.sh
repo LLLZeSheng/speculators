@@ -286,6 +286,12 @@ preflight_args() {
         --hidden-states-path "$HIDDEN_STATES_PATH"
         --required-devices "$required_devices"
     )
+    # The verifier never reads training examples.  Allow it to come online
+    # while preprocessing is still atomically building DATA_PATH; trainer and
+    # smoke roles continue to require and validate the completed dataset.
+    if [[ $ROLE == verifier ]]; then
+        PREFLIGHT_CMD+=(--skip-dataset-check)
+    fi
     if [[ $DRY_RUN == 1 ]]; then
         PREFLIGHT_CMD+=(--skip-device-check)
     fi

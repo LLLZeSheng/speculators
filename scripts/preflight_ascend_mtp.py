@@ -383,6 +383,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--verifier-model", required=True)
     parser.add_argument("--data-path", required=True)
+    parser.add_argument(
+        "--skip-dataset-check",
+        action="store_true",
+        help=(
+            "Skip loading the training dataset. Use only for verifier startup; "
+            "trainer and smoke preflight must validate the dataset."
+        ),
+    )
     parser.add_argument("--hidden-states-path", required=True)
     parser.add_argument("--required-devices", type=int, default=16)
     parser.add_argument("--endpoint")
@@ -400,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             args.mtp_model,
             config["num_hidden_layers"],
         )
-        rows = validate_dataset(args.data_path)
+        rows = None if args.skip_dataset_check else validate_dataset(args.data_path)
         validate_shared_directory(args.hidden_states_path)
         runtime = validate_npu_runtime(
             args.required_devices,
@@ -418,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  hidden size: {config['hidden_size']}")
     print(f"  native MTP tensors: {mtp_tensors}")
     print(f"  tokenizer assets: {', '.join(tokenizer_files)}")
-    print(f"  dataset rows: {rows}")
+    print(f"  dataset rows: {'skipped' if rows is None else rows}")
     print(f"  runtime: {json.dumps(runtime, sort_keys=True)}")
     return 0
 
