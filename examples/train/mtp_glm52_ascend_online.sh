@@ -390,7 +390,7 @@ run_verifier() {
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
         "${quantization_args[@]}"
         --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
-        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"enable_balance_scheduling":true,"multistream_overlap_shared_expert":true}'
+        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"multistream_overlap_shared_expert":true}'
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then

@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MANAGER = REPO_ROOT / "examples/train/manage_mtp_glm52_ascend_online_4v4t.sh"
 WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
+LAUNCHER = REPO_ROOT / "examples/train/mtp_glm52_ascend_online.sh"
 TEMPLATE = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t.example.yaml"
 
 
@@ -26,6 +27,14 @@ def _write_user_yaml(path: Path) -> None:
     for old, new in replacements.items():
         text = text.replace(old, new)
     path.write_text(text, encoding="utf-8")
+
+
+def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
+    text = LAUNCHER.read_text(encoding="utf-8")
+
+    assert '"enable_balance_scheduling":true' not in text
+    assert '"enable_dsa_cp":true' in text
+    assert '"enable_sparse_li_c8":true' in text
 
 
 def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
