@@ -53,6 +53,7 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
     """
 
     config_class: ClassVar[type[MTPSpeculatorConfig]] = MTPSpeculatorConfig  # type: ignore[misc]
+    uses_verifier_lm_head: ClassVar[bool] = False
     _keys_to_ignore_on_save: ClassVar[list[str]] = [  # type: ignore[misc,assignment]
         "embed_tokens.weight",
         "lm_head.weight",
@@ -105,11 +106,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             )
         super().__init__(config=config)
         self._init_vocab(config)
-        # MTP never consumes verifier_lm_head in forward.  Do not keep a third
-        # full-vocabulary matrix around until load_verifier_weights(): for GLM
-        # 5.2 this otherwise wastes roughly 1.8 GiB per BF16 process and can
-        # exhaust host memory while many local FSDP ranks initialize together.
-        del self.verifier_lm_head
+        # MTP never consumes verifier_lm_head in forward.  DraftVocabMixin uses
+        # uses_verifier_lm_head=False above to avoid allocating a third full-
+        # vocabulary matrix (roughly 1.8 GiB per GLM 5.2 BF16 process).
         if self.use_draft_vocab:
             raise NotImplementedError(
                 "Vocab reduction is not supported for MTP speculators"

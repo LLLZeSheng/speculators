@@ -33,6 +33,7 @@ class DraftVocabMixin(nn.Module):
     embed_tokens: nn.Embedding
     lm_head: nn.Linear
     verifier_lm_head: nn.Linear
+    uses_verifier_lm_head: ClassVar[bool] = True
 
     def _init_vocab(self, config):
         """Initialize vocab mappings, token embeddings, and LM heads.
@@ -64,19 +65,22 @@ class DraftVocabMixin(nn.Module):
 
         # LM HEADS
         self.lm_head = nn.Linear(self.hidden_size, self.draft_vocab_size, bias=False)
-        self.verifier_lm_head = nn.Linear(
-            self.hidden_size, self.draft_vocab_size, bias=False
-        )
-        self.verifier_lm_head.weight.requires_grad = False
+        if self.uses_verifier_lm_head:
+            self.verifier_lm_head = nn.Linear(
+                self.hidden_size, self.draft_vocab_size, bias=False
+            )
+            self.verifier_lm_head.weight.requires_grad = False
         self.lm_head.weight.requires_grad = False
 
         # Initialize weights to nan so it's easy to detect if they're never loaded
         torch.nn.init.constant_(self.lm_head.weight, torch.nan)
         torch.nn.init.constant_(self.embed_tokens.weight, torch.nan)
-        torch.nn.init.constant_(self.verifier_lm_head.weight, torch.nan)
+        if self.uses_verifier_lm_head:
+            torch.nn.init.constant_(self.verifier_lm_head.weight, torch.nan)
         self.lm_head._is_hf_initialized = True  # type: ignore[assignment] # noqa: SLF001
         self.embed_tokens._is_hf_initialized = True  # type: ignore[assignment] # noqa: SLF001
-        self.verifier_lm_head._is_hf_initialized = True  # type: ignore[assignment] # noqa: SLF001
+        if self.uses_verifier_lm_head:
+            self.verifier_lm_head._is_hf_initialized = True  # type: ignore[assignment] # noqa: SLF001
 
     def load_vocab_mappings(self, t2d: torch.Tensor | None, d2t: torch.Tensor | None):
         """Load target-to-draft and draft-to-target vocabulary mapping tensors.
