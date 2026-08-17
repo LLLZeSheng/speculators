@@ -323,7 +323,7 @@ def _detect_assistant_pattern(processor: ProcessorLike) -> str:
     # that case.  Requiring ``suffix`` unconditionally therefore makes every
     # single-turn conversation produce an all-zero loss mask.  Accept either
     # the detected next-turn suffix or the end of the rendered conversation.
-    return (
+    pattern = (
         re.escape(role_marker)
         + r"((?:"
         + lookahead_pattern
@@ -332,6 +332,24 @@ def _detect_assistant_pattern(processor: ProcessorLike) -> str:
         + re.escape(suffix)
         + r"|\Z)"
     )
+
+    # Fail before processing a large dataset if the inferred expression cannot
+    # recover both assistant turns, especially the suffix-less final turn.
+    captures = [
+        match.group(1) for match in re.finditer(pattern, formatted, re.DOTALL)
+    ]
+    missing = [
+        marker
+        for marker in ("ASSISTANT_MSG_1", "ASSISTANT_MSG_2")
+        if not any(marker in capture for capture in captures)
+    ]
+    if missing:
+        raise ValueError(
+            "Detected assistant pattern failed its self-check; "
+            f"missing captures for {missing}. Pattern: {pattern!r}"
+        )
+
+    return pattern
 
 
 def _create_loss_mask_from_offsets(
