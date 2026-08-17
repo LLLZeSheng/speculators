@@ -6,34 +6,39 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MANAGER = REPO_ROOT / "examples/train/manage_mtp_glm52_ascend_online_4v4t.sh"
 WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
+TEMPLATE = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t.example.yaml"
 
 
-def test_manager_configure_and_dry_run_topology(tmp_path: Path):
+def _write_user_yaml(path: Path) -> None:
+    text = TEMPLATE.read_text(encoding="utf-8")
+    replacements = {
+        "FILL_VERIFIER_0_IP": "10.0.0.1",
+        "FILL_VERIFIER_1_IP": "10.0.0.2",
+        "FILL_VERIFIER_2_IP": "10.0.0.3",
+        "FILL_VERIFIER_3_IP": "10.0.0.4",
+        "FILL_TRAINER_0_IP": "10.0.1.1",
+        "FILL_TRAINER_1_IP": "10.0.1.2",
+        "FILL_TRAINER_2_IP": "10.0.1.3",
+        "FILL_TRAINER_3_IP": "10.0.1.4",
+        "FILL_UNIQUE_SMOKE_ID": "unit-test",
+        "glm52-online-mtp3": "test-mtp",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
-    subprocess.run(
-        [
-            "bash",
-            str(MANAGER),
-            "configure",
-            "--verifier-ips",
-            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
-            "--trainer-ips",
-            "10.0.1.1,10.0.1.2,10.0.1.3,10.0.1.4",
-            "--container-prefix",
-            "test-mtp",
-            "--config",
-            str(config),
-        ],
-        check=True,
-    )
+    _write_user_yaml(config)
 
     text = config.read_text(encoding="utf-8")
-    assert 'container_name_prefix: "test-mtp"' in text
+    assert "container_name_prefix: test-mtp" in text
     assert "nic_name: auto" in text
-    assert 'mtp_init_model_path: "/kos_ulan/models/GLM-5.2"' in text
+    assert "mtp_init_model_path: /kos_ulan/models/GLM-5.2" in text
     assert (
-        'data_path: "/kos_ulan/lzs/spec_train/dataset/hf/'
-        'nuoya-average2k8k-32k"' in text
+        "data_path: /kos_ulan/lzs/spec_train/dataset/hf/"
+        "nuoya-average2k8k-32k" in text
     )
     assert "verifier_max_model_len: 32769" in text
     assert "verifier_max_batched_tokens: 32768" in text
@@ -41,6 +46,15 @@ def test_manager_configure_and_dry_run_topology(tmp_path: Path):
     assert "request_timeout: 900" in text
     assert "install_speculators_verifier: false" in text
     assert "install_speculators_trainer: true" in text
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "validate-config", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "CONFIG_STATUS=valid" in result.stdout
+    assert config.read_text(encoding="utf-8") == text
 
     environment = os.environ.copy()
     environment["MANAGER_DRY_RUN"] = "1"
@@ -69,26 +83,29 @@ def test_manager_configure_and_dry_run_topology(tmp_path: Path):
 
 
 def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    text = config.read_text(encoding="utf-8").replace("10.0.1.1", "10.0.0.1")
+    config.write_text(text, encoding="utf-8")
     result = subprocess.run(
-        [
-            "bash",
-            str(MANAGER),
-            "configure",
-            "--verifier-ips",
-            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
-            "--trainer-ips",
-            "10.0.0.1,10.0.1.2,10.0.1.3,10.0.1.4",
-            "--container-prefix",
-            "test-mtp",
-            "--config",
-            str(tmp_path / "cluster.yaml"),
-        ],
+        ["bash", str(MANAGER), "validate-config", "--config", str(config)],
         check=False,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 2
-    assert "duplicate node address" in result.stderr
+    assert "addresses must be unique" in result.stderr
+
+
+def test_manager_rejects_unedited_yaml_template():
+    result = subprocess.run(
+        ["bash", str(MANAGER), "validate-config", "--config", str(TEMPLATE)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "FILL_ placeholder" in result.stderr
 
 
 def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
@@ -129,22 +146,7 @@ def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
     tmp_path: Path,
 ):
     config = tmp_path / "cluster.yaml"
-    subprocess.run(
-        [
-            "bash",
-            str(MANAGER),
-            "configure",
-            "--verifier-ips",
-            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
-            "--trainer-ips",
-            "10.0.1.1,10.0.1.2,10.0.1.3,10.0.1.4",
-            "--container-prefix",
-            "test-mtp",
-            "--config",
-            str(config),
-        ],
-        check=True,
-    )
+    _write_user_yaml(config)
     base_environment = {
         **os.environ,
         "DRY_RUN": "1",

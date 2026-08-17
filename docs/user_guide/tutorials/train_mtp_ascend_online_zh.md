@@ -39,42 +39,45 @@ hidden states，不能作为可训练 MTP 权重的初始化来源。
 - 控制节点到八台机器的免密 SSH；
 - Docker 和 16 张可用 Ascend NPU。
 
-## 2. 只填写 IP 和容器名前缀
+## 2. 自己定义并维护 YAML
 
-在任意一台能够 SSH 到其他节点、且挂载 `/kos_ulan` 的控制节点执行：
+YAML 是你维护的唯一配置源。管理脚本只读取和校验，不会生成、覆盖或回写
+YAML。先复制模板，然后直接填写机器、容器和路径信息：
 
 ```bash
 cd /kos_ulan/spec_train/speculators
-
-bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh configure \
-  --verifier-ips V0,V1,V2,V3 \
-  --trainer-ips T0,T1,T2,T3 \
-  --container-prefix glm52-online-mtp3
+mkdir -p /kos_ulan/spec_train/config
+cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-其中：
+需要自行填写或确认：
 
-- `V0～V3` 是四台 verifier 的 IP；
-- `T0～T3` 是四台 trainer 的 IP；
-- `glm52-online-mtp3` 是容器名前缀；
+- `verifier_ips` 中四台 verifier 的 IP；
+- `trainer_ips` 中四台 trainer 的 IP；
+- `container_image` 和 `container_name_prefix`；
+- 代码、模型、数据、hidden states、checkpoint 和日志路径；
+- 所有 `FILL_*` 占位值必须被替换；
 - 最终容器名会自动成为 `glm52-online-mtp3-verifier0`、
   `glm52-online-mtp3-trainer0` 等。
 
-生成的共享配置位于：
+建议配置文件放在：
 
 ```text
 /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-如果 BF16 模型、数据或代码不在默认位置，只需在首次配置时增加：
+启动任何远端任务前先进行纯本地校验：
 
 ```bash
-  --mtp-init-model /kos_ulan/实际模型路径 \
-  --data-path /kos_ulan/实际数据路径 \
-  --repo-path /kos_ulan/实际代码路径
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+bash "$MANAGER" validate-config --config "$CONFIG"
 ```
 
-脚本会根据每台机器的 IP 自动识别网卡，不要求八台机器使用相同的网卡名。
+校验会拒绝重复 IP、未替换占位符、非法容器名前缀、错误的 DP×TP、长度预算
+不匹配等问题。`nic_name: auto` 会根据每台机器的 IP 自动识别网卡。
 密码不会写入配置；非默认 SSH 设置通过环境变量传入：
 
 ```bash
@@ -89,7 +92,7 @@ MANAGER_DRY_RUN=1 bash \
   examples/train/manage_mtp_glm52_ascend_online_4v4t.sh start-verifiers
 ```
 
-生成配置已经按 32K 样本设置以下默认值：
+手写 YAML 建议按 32K 样本设置以下值：
 
 ```yaml
 total_seq_len: 32768
@@ -158,7 +161,8 @@ nohup python scripts/prepare_glm52_nuoya_32k.py \
 ```bash
 cd /kos_ulan/spec_train/speculators
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-bash "$MANAGER" preflight
+CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+bash "$MANAGER" preflight --config "$CONFIG"
 ```
 
 预检会在八台机器上检查模型配置、tokenizer、数据集、共享缓存路径、NPU
@@ -167,8 +171,8 @@ bash "$MANAGER" preflight
 ## 4. 启动 verifier
 
 ```bash
-bash "$MANAGER" start-verifiers
-bash "$MANAGER" wait-verifiers
+bash "$MANAGER" start-verifiers --config "$CONFIG"
+bash "$MANAGER" wait-verifiers --config "$CONFIG"
 ```
 
 `wait-verifiers` 会等待四个 `/health` 接口全部返回 HTTP 200。启动日志在：

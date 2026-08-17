@@ -39,29 +39,39 @@ use `VERIFIER_QUANTIZATION_MODE=ascend`; see
 Expected image packages are `torch_npu==2.10.0.post2`, `vllm==0.23.0`, and
 `vllm-ascend==0.23.0rc1`.
 
-## 2. Create the shared configuration
+## 2. Define the shared YAML yourself
 
-### Recommended: configure the cluster from one control host
-
-Set up passwordless SSH from the control host to all eight nodes. If the
-standard model and dataset paths listed below exist, the only required inputs
-are the eight IPs and one Docker container-name prefix:
+The YAML is user-maintained source of truth. The manager only reads and
+validates it; it never generates or rewrites it. Copy the template, then edit
+the machine addresses, container settings, and paths directly:
 
 ```bash
 cd /kos_ulan/spec_train/speculators
-bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh configure \
-  --verifier-ips V0,V1,V2,V3 \
-  --trainer-ips T0,T1,T2,T3 \
-  --container-prefix glm52-online-mtp3
+mkdir -p /kos_ulan/spec_train/config
+cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-The generated shared configuration is:
+The shared configuration is:
 
 ```text
 /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-The defaults are:
+It explicitly contains the four verifier IPs, four trainer IPs, image,
+container prefix, container mount path, repository, model/data/output paths,
+32K sizing, and per-role installation policy. Replace every `FILL_*` value.
+
+Validate it locally before any SSH or Docker operation:
+
+```bash
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+bash "$MANAGER" validate-config \
+  --config /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+```
+
+Important configured values are:
 
 ```text
 BF16 MTP initialization model: /kos_ulan/models/GLM-5.2
@@ -81,35 +91,33 @@ full 32K samples at once; additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
 keeps capacity for shorter samples without claiming eight simultaneous 32K
 prefills.
 
-Override a non-standard path during `configure` with `--mtp-init-model`,
-`--data-path`, or `--repo-path`. The manager resolves `NIC_NAME` separately on
-each host from its configured IP, so the shared configuration does not require
-a common interface name.
+Set non-standard paths directly in YAML. With `nic_name: auto`, the wrapper
+resolves the interface separately on each host from its configured IP.
 
 The complete managed workflow is:
 
 ```bash
-MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-bash "$MANAGER" preflight
-bash "$MANAGER" start-verifiers
-bash "$MANAGER" wait-verifiers
-bash "$MANAGER" smoke
-bash "$MANAGER" status
+CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+bash "$MANAGER" preflight --config "$CONFIG"
+bash "$MANAGER" start-verifiers --config "$CONFIG"
+bash "$MANAGER" wait-verifiers --config "$CONFIG"
+bash "$MANAGER" smoke --config "$CONFIG"
+bash "$MANAGER" status --config "$CONFIG"
 # After all four smoke containers finish successfully:
-bash "$MANAGER" train
+bash "$MANAGER" train --config "$CONFIG"
 ```
 
 For an offline cache-only resume:
 
 ```bash
-bash "$MANAGER" offline
+bash "$MANAGER" offline --config "$CONFIG"
 ```
 
 To inspect or stop only containers with this configured prefix:
 
 ```bash
-bash "$MANAGER" status
-bash "$MANAGER" stop
+bash "$MANAGER" status --config "$CONFIG"
+bash "$MANAGER" stop --config "$CONFIG"
 ```
 
 The manager never stores an SSH password. Use `SSH_USER`, `SSH_PORT`, and
@@ -136,15 +144,7 @@ Its default sources are `average-2k-nuoya` and `average-8k`, and its output is
 `conversion_manifest.json` records row count, length percentiles, total token
 count, and the estimated BF16 hidden-state cache size for one 6144-wide layer.
 
-### Manual configuration
-
-```bash
-cd /kos_ulan/spec_train/speculators
-mkdir -p /kos_ulan/spec_train/config /kos_ulan/spec_train/logs
-cp examples/train/mtp_glm52_ascend_online_4v4t.yaml.example \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-```
+### Review the user-maintained YAML
 
 Fill all eight IPs, `nic_name`, `mtp_init_model_path`, `data_path`, and a
 unique `smoke_run_id`. Verify these critical YAML values:
@@ -168,7 +168,7 @@ install_speculators_trainer: true
 Use one identical file on all nodes. IPs must be mutually routable and appear
 in `hostname -I`. Use `NODE_IP=<chosen-ip>` for a host with ambiguous IPs.
 
-`NIC_NAME=auto` is supported and resolves the interface from `NODE_IP` on each
+`nic_name: auto` is supported and resolves the interface from `NODE_IP` on each
 host before Docker starts.
 
 ### What happens inside each container

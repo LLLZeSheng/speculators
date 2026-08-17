@@ -119,6 +119,8 @@ def validate(config: dict[str, str | list[str]]) -> None:
     unknown = sorted(set(config) - allowed)
     if unknown:
         raise ValueError(f"unknown YAML keys: {unknown}")
+    if config.get("version") != "1":
+        raise ValueError("version must be 1")
     for key in ("verifier_ips", "trainer_ips"):
         values = config.get(key)
         if not isinstance(values, list) or len(values) != 4 or not all(values):
@@ -126,9 +128,72 @@ def validate(config: dict[str, str | list[str]]) -> None:
     all_ips = [*config["verifier_ips"], *config["trainer_ips"]]  # type: ignore[misc]
     if len(set(all_ips)) != 8:
         raise ValueError("all verifier and trainer addresses must be unique")
-    for key in ("container_image", "container_name_prefix", "repo_path"):
+    required_scalars = (
+        "container_image",
+        "container_name_prefix",
+        "container_repo_path",
+        "repo_path",
+        "shared_root",
+        "nic_name",
+        "verifier_model_path",
+        "verifier_source_model_path",
+        "verifier_quantization_mode",
+        "mtp_init_model_path",
+        "data_path",
+        "hidden_states_path",
+        "output_path",
+        "log_root",
+        "trainer_mode",
+        "trainer_data_mode",
+        "smoke_run_id",
+        "install_speculators_verifier",
+        "install_speculators_trainer",
+    )
+    for key in required_scalars:
         if not isinstance(config.get(key), str) or not config[key]:
             raise ValueError(f"{key} is required")
+    for key, value in config.items():
+        values = value if isinstance(value, list) else [value]
+        if any("FILL_" in item for item in values):
+            raise ValueError(f"{key} still contains a FILL_ placeholder")
+    prefix = config["container_name_prefix"]
+    assert isinstance(prefix, str)
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", prefix) is None:
+        raise ValueError("container_name_prefix is not a valid Docker name prefix")
+
+    integer_keys = (
+        "verifier_port",
+        "verifier_dp_size",
+        "verifier_tp_size",
+        "verifier_max_model_len",
+        "verifier_max_num_seqs",
+        "verifier_max_batched_tokens",
+        "total_seq_len",
+        "request_timeout",
+        "max_retries",
+        "epochs",
+    )
+    numbers = {}
+    for key in integer_keys:
+        value = config.get(key)
+        if not isinstance(value, str) or not value.isdigit():
+            raise ValueError(f"{key} must be a non-negative integer")
+        numbers[key] = int(value)
+    for key in integer_keys:
+        if key != "max_retries" and numbers[key] <= 0:
+            raise ValueError(f"{key} must be positive")
+    if numbers["verifier_dp_size"] * numbers["verifier_tp_size"] != 16:
+        raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
+    if numbers["verifier_max_model_len"] <= numbers["total_seq_len"]:
+        raise ValueError("verifier_max_model_len must exceed total_seq_len")
+    if numbers["verifier_max_batched_tokens"] < numbers["total_seq_len"]:
+        raise ValueError(
+            "verifier_max_batched_tokens must be at least total_seq_len"
+        )
+    if config.get("trainer_mode") not in {"smoke", "trainer"}:
+        raise ValueError("trainer_mode must be smoke or trainer")
+    if config.get("trainer_data_mode") not in {"online-cache", "offline"}:
+        raise ValueError("trainer_data_mode must be online-cache or offline")
 
 
 def render(config: dict[str, str | list[str]]) -> str:
@@ -157,9 +222,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    config = load_flat_yaml(Path(args.config))
-    validate(config)
-    print(render(config), end="")
+    try:
+        config = load_flat_yaml(Path(args.config))
+        validate(config)
+        output = render(config)
+    except (OSError, ValueError) as exc:
+        parser.exit(2, f"ERROR: {exc}\n")
+    print(output, end="")
 
 
 if __name__ == "__main__":

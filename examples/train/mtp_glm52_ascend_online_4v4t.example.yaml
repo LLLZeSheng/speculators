@@ -1,4 +1,5 @@
-# One shared configuration for four verifier and four trainer hosts.
+# User-maintained source of truth for four verifier and four trainer hosts.
+# The manager validates and reads this file; it never generates or rewrites it.
 version: 1
 cluster_name: glm52-online-mtp3
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Configure and operate a 4-verifier + 4-trainer Ascend online MTP cluster.
+# Validate and operate a user-configured 4-verifier + 4-trainer MTP cluster.
 
 set -euo pipefail
 
@@ -10,21 +10,14 @@ CONFIG_RENDERER=$REPO_ROOT/scripts/render_ascend_mtp_cluster_yaml.py
 DEFAULT_CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 DEFAULT_REPO=/kos_ulan/spec_train/speculators
 DEFAULT_CONTAINER_PREFIX=glm52-mtp3
-DEFAULT_MTP_MODEL=/kos_ulan/models/GLM-5.2
-DEFAULT_DATASET=/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
 
 usage() {
     cat <<'EOF'
 Usage:
-  manage_mtp_glm52_ascend_online_4v4t.sh configure \
-    --verifier-ips IP0,IP1,IP2,IP3 \
-    --trainer-ips IP0,IP1,IP2,IP3 \
-    --container-prefix NAME [OPTIONS]
-
   manage_mtp_glm52_ascend_online_4v4t.sh COMMAND [--config FILE]
 
 Commands:
-  configure        Write the shared YAML cluster configuration.
+  validate-config  Validate the user-maintained YAML without opening SSH.
   preflight        Run non-training validation on all eight nodes.
   start-verifiers  Start four verifier containers in the background.
   wait-verifiers   Wait until all verifier health endpoints return HTTP 200.
@@ -34,23 +27,18 @@ Commands:
   status           Show matching containers and recent host-wrapper logs.
   stop             Stop this cluster's verifier/trainer containers.
 
-Configure options:
-  --verifier-ips CSV       Exactly four verifier host addresses.
-  --trainer-ips CSV        Exactly four trainer host addresses.
-  --container-prefix NAME  Prefix for all eight container names.
-  --config FILE            Output path on the shared filesystem.
-  --mtp-init-model PATH    BF16 GLM-5.2 model containing native MTP weights.
-  --data-path PATH         Hugging Face training dataset.
-  --repo-path PATH         Shared repository path visible on every host.
-  --force                  Replace an existing config after making a backup.
+Options:
+  --config FILE    User-maintained YAML. Default:
+                   /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 
 Runtime environment overrides:
   SSH_USER=root SSH_PORT=22 SSH_IDENTITY_FILE=/path/to/key
   SSH_STRICT_HOST_KEY_CHECKING=accept-new HEALTH_TIMEOUT=7200
   MANAGER_DRY_RUN=1  # print remote SSH commands without executing them
 
-The default paths allow subsequent commands to require only --config. The
-script deliberately does not store passwords; configure SSH keys first.
+Copy and edit examples/train/mtp_glm52_ascend_online_4v4t.example.yaml; this
+manager never generates or rewrites the YAML. It deliberately does not store
+passwords; configure SSH keys first.
 EOF
 }
 
@@ -61,105 +49,6 @@ fail() {
 
 quote() {
     printf '%q' "$1"
-}
-
-yaml_quote() {
-    local value=${1//\\/\\\\}
-    value=${value//\"/\\\"}
-    value=${value//$'\n'/\\n}
-    printf '"%s"' "$value"
-}
-
-split_csv() {
-    local value=$1
-    local destination=$2
-    local -a parsed=()
-    IFS=',' read -r -a parsed <<<"$value"
-    ((${#parsed[@]} == 4)) || fail "$destination requires exactly four values"
-    local entry
-    for entry in "${parsed[@]}"; do
-        [[ -n $entry && $entry != *[[:space:]]* ]] || \
-            fail "$destination contains an empty or whitespace value"
-    done
-    local -n output=$destination
-    output=("${parsed[@]}")
-}
-
-write_config() {
-    local verifier_csv= trainer_csv=
-    local prefix=$DEFAULT_CONTAINER_PREFIX
-    local config=$DEFAULT_CONFIG
-    local mtp_model=$DEFAULT_MTP_MODEL
-    local dataset=$DEFAULT_DATASET
-    local repo=$DEFAULT_REPO
-    local force=0
-    while (( $# )); do
-        case "$1" in
-            --verifier-ips) verifier_csv=${2:-}; shift 2 ;;
-            --trainer-ips) trainer_csv=${2:-}; shift 2 ;;
-            --container-prefix) prefix=${2:-}; shift 2 ;;
-            --config) config=${2:-}; shift 2 ;;
-            --mtp-init-model) mtp_model=${2:-}; shift 2 ;;
-            --data-path) dataset=${2:-}; shift 2 ;;
-            --repo-path) repo=${2:-}; shift 2 ;;
-            --force) force=1; shift ;;
-            -h | --help) usage; exit 0 ;;
-            *) fail "unknown configure option: $1" ;;
-        esac
-    done
-    [[ -n $verifier_csv ]] || fail "--verifier-ips is required"
-    [[ -n $trainer_csv ]] || fail "--trainer-ips is required"
-    [[ $prefix =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
-        fail "invalid Docker container prefix: $prefix"
-    local -a verifier_ips trainer_ips
-    split_csv "$verifier_csv" verifier_ips
-    split_csv "$trainer_csv" trainer_ips
-    local -A seen=()
-    local address
-    for address in "${verifier_ips[@]}" "${trainer_ips[@]}"; do
-        [[ -z ${seen[$address]:-} ]] || fail "duplicate node address: $address"
-        seen[$address]=1
-    done
-
-    mkdir -p -- "$(dirname -- "$config")"
-    if [[ -e $config ]]; then
-        ((force == 1)) || \
-            fail "config already exists; use --force to replace it: $config"
-        cp -- "$config" "${config}.backup.$(date +%Y%m%d-%H%M%S)"
-    fi
-    local temporary
-    temporary=$(mktemp "${config}.tmp.XXXXXXXX")
-    {
-        printf '# Generated by %s on %s\n' "${0##*/}" "$(date -Iseconds)"
-        printf 'version: 1\ncluster_name: '; yaml_quote "$prefix"; printf '\n'
-        printf 'verifier_ips:\n'; printf '  - %s\n' "${verifier_ips[@]}"
-        printf 'trainer_ips:\n'; printf '  - %s\n' "${trainer_ips[@]}"
-        printf 'container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3\n'
-        printf 'container_name_prefix: '; yaml_quote "$prefix"; printf '\n'
-        printf 'container_repo_path: /workspace/speculators\n'
-        printf 'repo_path: '; yaml_quote "$repo"; printf '\n'
-        printf 'shared_root: /kos_ulan\nnic_name: auto\n'
-        printf 'verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4\n'
-        printf 'verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1\n'
-        printf 'verifier_quantization_mode: ascend\n'
-        printf 'mtp_init_model_path: '; yaml_quote "$mtp_model"; printf '\n'
-        printf 'data_path: '; yaml_quote "$dataset"; printf '\n'
-        printf 'hidden_states_path: /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8\n'
-        printf 'output_path: /kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3\n'
-        printf 'log_root: /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3\n'
-        printf 'verifier_port: 8077\nverifier_dp_size: 2\nverifier_tp_size: 8\n'
-        printf 'verifier_max_model_len: 32769\nverifier_max_num_seqs: 8\n'
-        printf 'verifier_max_batched_tokens: 32768\ntotal_seq_len: 32768\n'
-        printf 'request_timeout: 900\nmax_retries: 3\nepochs: 5\n'
-        printf 'trainer_mode: smoke\ntrainer_data_mode: online-cache\n'
-        printf 'smoke_run_id: smoke-%s\n' "$(date +%Y%m%d-%H%M%S)"
-        printf 'install_speculators_verifier: false\n'
-        printf 'install_speculators_trainer: true\n'
-    } >"$temporary"
-    chmod 600 "$temporary"
-    mv -- "$temporary" "$config"
-    printf 'CONFIG_STATUS=created\nCONFIG_FILE=%s\n' "$config"
-    printf 'CONTAINER_PREFIX=%s\n' "$prefix"
 }
 
 CONFIG_FILE=$DEFAULT_CONFIG
@@ -377,15 +266,15 @@ COMMAND=${1:-}
 [[ -n $COMMAND ]] || { usage; exit 2; }
 shift
 
-if [[ $COMMAND == configure ]]; then
-    write_config "$@"
-    exit
-fi
-
 parse_config_option "$@"
 load_config
 
 case "$COMMAND" in
+    validate-config)
+        printf 'CONFIG_STATUS=valid\nCONFIG_FILE=%s\n' "$CONFIG_FILE"
+        printf 'VERIFIERS=%s\nTRAINERS=%s\n' \
+            "${#CLUSTER_VERIFIER_IPS[@]}" "${#CLUSTER_TRAINER_IPS[@]}"
+        ;;
     preflight)
         index=0
         for host in "${CLUSTER_VERIFIER_IPS[@]}" "${CLUSTER_TRAINER_IPS[@]}"; do
