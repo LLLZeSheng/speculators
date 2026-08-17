@@ -318,12 +318,19 @@ def _detect_assistant_pattern(processor: ProcessorLike) -> str:
         # Fallback to hardcoded if no clear tag found
         lookahead_pattern = r"(?!<\|start\|)"
 
+    # The final assistant turn is commonly the last text in a rendered chat.
+    # Some templates (including GLM-5.2) do not append an EOS/turn suffix in
+    # that case.  Requiring ``suffix`` unconditionally therefore makes every
+    # single-turn conversation produce an all-zero loss mask.  Accept either
+    # the detected next-turn suffix or the end of the rendered conversation.
     return (
         re.escape(role_marker)
         + r"((?:"
         + lookahead_pattern
         + r".)*?)"
+        + r"(?:"
         + re.escape(suffix)
+        + r"|\Z)"
     )
 
 

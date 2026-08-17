@@ -397,6 +397,53 @@ def test_detect_assistant_pattern_extracts_correct_content():
     assert "Second question" not in second_match
 
 
+@pytest.mark.sanity
+def test_detect_assistant_pattern_supports_final_turn_without_suffix():
+    """GLM-style templates end the final assistant turn at end-of-text."""
+
+    class GlmStyleProcessor:
+        def apply_chat_template(
+            self, conversation, *, tokenize=False, add_generation_prompt=False
+        ):
+            assert not tokenize
+            rendered = "[gMASK]<sop>"
+            for turn in conversation:
+                if turn["role"] == "user":
+                    rendered += f'<|user|>{turn["content"]}'
+                elif turn["role"] == "assistant":
+                    rendered += (
+                        f'<|assistant|><think></think>{turn["content"]}'
+                    )
+            return rendered
+
+    processor = GlmStyleProcessor()
+    pattern = _detect_assistant_pattern(processor)  # type: ignore[arg-type]
+
+    single_turn = processor.apply_chat_template(
+        [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Final answer"},
+        ]
+    )
+    matches = list(re.finditer(pattern, single_turn, re.DOTALL))
+    assert len(matches) == 1
+    assert matches[0].group(1).endswith("Final answer")
+
+    multi_turn = processor.apply_chat_template(
+        [
+            {"role": "user", "content": "Question 1"},
+            {"role": "assistant", "content": "Answer 1"},
+            {"role": "user", "content": "Question 2"},
+            {"role": "assistant", "content": "Answer 2"},
+        ]
+    )
+    matches = list(re.finditer(pattern, multi_turn, re.DOTALL))
+    assert len(matches) == 2
+    assert matches[0].group(1).endswith("Answer 1")
+    assert matches[1].group(1).endswith("Answer 2")
+    assert all("Question" not in match.group(1) for match in matches)
+
+
 # Tests for _create_loss_mask_from_offsets
 
 
