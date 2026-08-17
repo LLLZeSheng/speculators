@@ -9,7 +9,7 @@ WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
 
 
 def test_manager_configure_and_dry_run_topology(tmp_path: Path):
-    config = tmp_path / "cluster.env"
+    config = tmp_path / "cluster.yaml"
     subprocess.run(
         [
             "bash",
@@ -28,17 +28,19 @@ def test_manager_configure_and_dry_run_topology(tmp_path: Path):
     )
 
     text = config.read_text(encoding="utf-8")
-    assert "CONTAINER_NAME_PREFIX=test-mtp" in text
-    assert "NIC_NAME=${NIC_NAME:-auto}" in text
-    assert "MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-/kos_ulan/models/GLM-5.2}" in text
+    assert 'container_name_prefix: "test-mtp"' in text
+    assert "nic_name: auto" in text
+    assert 'mtp_init_model_path: "/kos_ulan/models/GLM-5.2"' in text
     assert (
-        "DATA_PATH=${DATA_PATH:-/kos_ulan/lzs/spec_train/dataset/hf/"
-        "nuoya-average2k8k-32k}" in text
+        'data_path: "/kos_ulan/lzs/spec_train/dataset/hf/'
+        'nuoya-average2k8k-32k"' in text
     )
-    assert "VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}" in text
-    assert "VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32768}" in text
-    assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-32768}" in text
-    assert "REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-900}" in text
+    assert "verifier_max_model_len: 32769" in text
+    assert "verifier_max_batched_tokens: 32768" in text
+    assert "total_seq_len: 32768" in text
+    assert "request_timeout: 900" in text
+    assert "install_speculators_verifier: false" in text
+    assert "install_speculators_trainer: true" in text
 
     environment = os.environ.copy()
     environment["MANAGER_DRY_RUN"] = "1"
@@ -79,7 +81,7 @@ def test_manager_rejects_duplicate_node_addresses(tmp_path: Path):
             "--container-prefix",
             "test-mtp",
             "--config",
-            str(tmp_path / "cluster.env"),
+            str(tmp_path / "cluster.yaml"),
         ],
         check=False,
         capture_output=True,
@@ -121,3 +123,48 @@ def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
     )
     assert "[network] LOCAL_IP=10.0.0.7 NIC_NAME=eth-test" in result.stdout
     assert "NIC_NAME=eth-test" in result.stdout
+
+
+def test_yaml_wrapper_skips_install_for_verifier_and_installs_for_trainer(
+    tmp_path: Path,
+):
+    config = tmp_path / "cluster.yaml"
+    subprocess.run(
+        [
+            "bash",
+            str(MANAGER),
+            "configure",
+            "--verifier-ips",
+            "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+            "--trainer-ips",
+            "10.0.1.1,10.0.1.2,10.0.1.3,10.0.1.4",
+            "--container-prefix",
+            "test-mtp",
+            "--config",
+            str(config),
+        ],
+        check=True,
+    )
+    base_environment = {
+        **os.environ,
+        "DRY_RUN": "1",
+        "NIC_NAME": "eth0",
+    }
+    verifier = subprocess.run(
+        ["bash", str(WRAPPER), str(config)],
+        env={**base_environment, "NODE_IP": "10.0.0.1"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "pip install" not in verifier.stdout
+
+    trainer = subprocess.run(
+        ["bash", str(WRAPPER), str(config)],
+        env={**base_environment, "NODE_IP": "10.0.1.1", "TRAINER_MODE": "trainer"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "pip\\ install\\ --no-deps" in trainer.stdout
+    assert "/hs_connectors" in trainer.stdout

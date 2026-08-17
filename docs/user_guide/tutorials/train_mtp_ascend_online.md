@@ -58,7 +58,7 @@ bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh configure \
 The generated shared configuration is:
 
 ```text
-/kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 The defaults are:
@@ -141,26 +141,28 @@ count, and the estimated BF16 hidden-state cache size for one 6144-wide layer.
 ```bash
 cd /kos_ulan/spec_train/speculators
 mkdir -p /kos_ulan/spec_train/config /kos_ulan/spec_train/logs
-cp examples/train/mtp_glm52_ascend_online_4v4t.env.example \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
-vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+cp examples/train/mtp_glm52_ascend_online_4v4t.yaml.example \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-Fill all eight IPs, `NIC_NAME`, `MTP_INIT_MODEL_PATH`, `DATA_PATH`, and a
-unique `SMOKE_RUN_ID`. Verify these critical values:
+Fill all eight IPs, `nic_name`, `mtp_init_model_path`, `data_path`, and a
+unique `smoke_run_id`. Verify these critical YAML values:
 
-```bash
-VERIFIER_MODEL_PATH=/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
-VERIFIER_SOURCE_MODEL_PATH=/mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
-VERIFIER_QUANTIZATION_MODE=ascend
-VERIFIER_MAX_MODEL_LEN=32769
-VERIFIER_MAX_BATCHED_TOKENS=32768
-VERIFIER_MAX_NUM_SEQS=8
-TOTAL_SEQ_LEN=32768
-REQUEST_TIMEOUT=900
-TRAINER_MODE=smoke
-TRAINER_DATA_MODE=online-cache
-EPOCHS=5
+```yaml
+verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+verifier_quantization_mode: ascend
+verifier_max_model_len: 32769
+verifier_max_batched_tokens: 32768
+verifier_max_num_seqs: 8
+total_seq_len: 32768
+request_timeout: 900
+trainer_mode: smoke
+trainer_data_mode: online-cache
+epochs: 5
+install_speculators_verifier: false
+install_speculators_trainer: true
 ```
 
 Use one identical file on all nodes. IPs must be mutually routable and appear
@@ -169,6 +171,23 @@ in `hostname -I`. Use `NODE_IP=<chosen-ip>` for a host with ambiguous IPs.
 `NIC_NAME=auto` is supported and resolves the interface from `NODE_IP` on each
 host before Docker starts.
 
+### What happens inside each container
+
+No interactive container setup is required. The host wrapper makes the role
+behavior deterministic:
+
+- verifier: does not run pip; the repository is bind-mounted at
+  `/workspace/speculators`, and `PYTHONPATH` is set before starting the
+  hidden-state vLLM service;
+- trainer/smoke: automatically runs
+  `python -m pip install --no-deps -e /workspace/speculators/hs_connectors -e /workspace/speculators`,
+  then starts the 64-rank `torchrun` job;
+- all roles use the same configured vLLM-Ascend image.
+
+The two installation switches live in YAML and may be overridden for a custom
+image. Leave the verifier switch false unless its image lacks imports needed
+by a locally modified launcher.
+
 ## 3. Dry-run and smoke test
 
 On one verifier and one trainer, inspect commands without loading models:
@@ -176,7 +195,7 @@ On one verifier and one trainer, inspect commands without loading models:
 ```bash
 cd /kos_ulan/spec_train/speculators
 DRY_RUN=1 bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 Verifier output must contain `--quantization ascend`, must use the v4 path,
@@ -187,7 +206,7 @@ Start all four verifiers with the same command on each verifier node:
 ```bash
 cd /kos_ulan/spec_train/speculators
 nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/verifier-container-$(hostname).log 2>&1 &
 ```
 
@@ -204,7 +223,7 @@ it does not contaminate the production cache:
 ```bash
 cd /kos_ulan/spec_train/speculators
 nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/smoke-container-$(hostname).log 2>&1 &
 ```
 
@@ -221,7 +240,7 @@ four trainer nodes within the HCCL rendezvous timeout:
 cd /kos_ulan/spec_train/speculators
 TRAINER_MODE=trainer TRAINER_DATA_MODE=online-cache nohup \
   bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/trainer-container-$(hostname).log 2>&1 &
 ```
 
@@ -248,7 +267,7 @@ offline mode:
 cd /kos_ulan/spec_train/speculators
 TRAINER_MODE=trainer TRAINER_DATA_MODE=offline nohup \
   bash examples/train/run_mtp_glm52_ascend_online_container.sh \
-  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.env \
+  /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml \
   > /kos_ulan/spec_train/logs/trainer-offline-container-$(hostname).log 2>&1 &
 ```
 

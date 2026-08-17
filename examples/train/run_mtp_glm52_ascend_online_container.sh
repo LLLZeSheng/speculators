@@ -16,8 +16,23 @@ if [[ -n $CONFIG_FILE ]]; then
         printf 'ERROR: configuration file is missing: %s\n' "$CONFIG_FILE" >&2
         exit 2
     }
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    case "$CONFIG_FILE" in
+        *.yaml | *.yml)
+            rendered_config=$(mktemp)
+            trap 'rm -f -- "${rendered_config:-}"' EXIT
+            python "$REPO_HOST_PATH/scripts/render_ascend_mtp_cluster_yaml.py" \
+                --config "$CONFIG_FILE" >"$rendered_config"
+            # shellcheck disable=SC1090
+            source "$rendered_config"
+            rm -f -- "$rendered_config"
+            trap - EXIT
+            ;;
+        *)
+            # Legacy shell configuration remains readable for existing jobs.
+            # shellcheck disable=SC1090
+            source "$CONFIG_FILE"
+            ;;
+    esac
 fi
 
 ROLE=${ROLE:-}
@@ -30,7 +45,7 @@ VERIFIER_SOURCE_MODEL_PATH=${VERIFIER_SOURCE_MODEL_PATH:-}
 MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-${SHARED_ROOT}/models/GLM-5.2}
 DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k}
 NIC_NAME=${NIC_NAME:-}
-INSTALL_SPECULATORS=${INSTALL_SPECULATORS:-1}
+INSTALL_SPECULATORS=${INSTALL_SPECULATORS:-auto}
 DRY_RUN=${DRY_RUN:-0}
 
 fail() {
@@ -87,7 +102,7 @@ resolve_cluster_role() {
 }
 
 resolve_cluster_role
-CONTAINER_NAME=${CONTAINER_NAME:-glm52-mtp3-${ROLE}-${VERIFIER_ID:-${NODE_RANK:-0}}}
+CONTAINER_NAME=${CONTAINER_NAME:-${CONTAINER_NAME_PREFIX:-glm52-mtp3}-${ROLE}${VERIFIER_ID:-${NODE_RANK:-0}}}
 
 resolve_nic_name() {
     if [[ $NIC_NAME != auto ]]; then
@@ -116,6 +131,21 @@ resolve_nic_name
 case "$ROLE" in
     preflight | verifier | trainer | smoke) ;;
     *) fail "ROLE must be one of: preflight, verifier, trainer, smoke" ;;
+esac
+
+if [[ $INSTALL_SPECULATORS == auto ]]; then
+    case "$ROLE" in
+        trainer | smoke)
+            INSTALL_SPECULATORS=${INSTALL_SPECULATORS_TRAINER:-1}
+            ;;
+        verifier | preflight)
+            INSTALL_SPECULATORS=${INSTALL_SPECULATORS_VERIFIER:-0}
+            ;;
+    esac
+fi
+case "$INSTALL_SPECULATORS" in
+    0 | 1) ;;
+    *) fail "INSTALL_SPECULATORS must resolve to 0 or 1" ;;
 esac
 
 if [[ -n $CONFIG_FILE ]]; then
@@ -197,7 +227,7 @@ inner=(bash "$CONTAINER_REPO_PATH/examples/train/mtp_glm52_ascend_online.sh")
 if [[ $INSTALL_SPECULATORS == 1 ]]; then
     inner=(
         bash -lc
-        "python -m pip install --no-deps -e '$CONTAINER_REPO_PATH' && exec bash '$CONTAINER_REPO_PATH/examples/train/mtp_glm52_ascend_online.sh'"
+        "python -m pip install --no-deps -e '$CONTAINER_REPO_PATH/hs_connectors' -e '$CONTAINER_REPO_PATH' && exec bash '$CONTAINER_REPO_PATH/examples/train/mtp_glm52_ascend_online.sh'"
     )
 fi
 

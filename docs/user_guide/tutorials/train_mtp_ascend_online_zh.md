@@ -63,7 +63,7 @@ bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh configure \
 生成的共享配置位于：
 
 ```text
-/kos_ulan/spec_train/config/glm52-mtp3-4v4t.env
+/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 如果 BF16 模型、数据或代码不在默认位置，只需在首次配置时增加：
@@ -91,13 +91,13 @@ MANAGER_DRY_RUN=1 bash \
 
 生成配置已经按 32K 样本设置以下默认值：
 
-```text
-TOTAL_SEQ_LEN=32768
-VERIFIER_MAX_MODEL_LEN=32769
-VERIFIER_MAX_BATCHED_TOKENS=32768
-VERIFIER_MAX_NUM_SEQS=8
-REQUEST_TIMEOUT=900
-MAX_RETRIES=3
+```yaml
+total_seq_len: 32768
+verifier_max_model_len: 32769
+verifier_max_batched_tokens: 32768
+verifier_max_num_seqs: 8
+request_timeout: 900
+max_retries: 3
 ```
 
 `32769` 为一次 hidden-state 请求额外保留 1 个生成 token。hidden-state
@@ -105,6 +105,31 @@ launcher 会关闭 chunked prefill，因此 batched-token 预算不能小于输�
 每台 verifier 是 DP2 × TP8，满 32K 时实际约可同时 prefill 2 条；其余请求会
 排队。`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
 32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
+
+YAML 同时明确记录容器行为：
+
+```yaml
+container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_name_prefix: glm52-online-mtp3
+container_repo_path: /workspace/speculators
+install_speculators_verifier: false
+install_speculators_trainer: true
+```
+
+### 容器内实际执行什么
+
+不需要人工进入任何容器操作：
+
+- verifier：不执行 pip install。代码会挂载到 `/workspace/speculators`，启动
+  脚本设置 `PYTHONPATH` 后直接拉起 hidden-state vLLM 服务；
+- trainer/smoke：容器启动时自动执行
+  `python -m pip install --no-deps -e /workspace/speculators/hs_connectors -e /workspace/speculators`，
+  随后进入四机 64-rank `torchrun`；
+- 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
+
+因此你的理解基本正确，但 trainer 也不需要手工进入容器执行 pip，包装脚本会
+自动完成。只有使用自制镜像且已经预装代码时，才建议把 trainer 开关改为
+`false`。
 
 ### 转换约 120 万条 Nuoya 数据
 

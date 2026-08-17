@@ -1,0 +1,49 @@
+# One shared configuration for four verifier and four trainer hosts.
+version: 1
+cluster_name: glm52-online-mtp3
+
+verifier_ips:
+  - FILL_VERIFIER_0_IP
+  - FILL_VERIFIER_1_IP
+  - FILL_VERIFIER_2_IP
+  - FILL_VERIFIER_3_IP
+trainer_ips:
+  - FILL_TRAINER_0_IP
+  - FILL_TRAINER_1_IP
+  - FILL_TRAINER_2_IP
+  - FILL_TRAINER_3_IP
+
+container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_name_prefix: glm52-online-mtp3
+container_repo_path: /workspace/speculators
+repo_path: /kos_ulan/spec_train/speculators
+shared_root: /kos_ulan
+nic_name: auto
+
+verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+verifier_quantization_mode: ascend
+mtp_init_model_path: /kos_ulan/models/GLM-5.2
+data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
+hidden_states_path: /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
+output_path: /kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3
+log_root: /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3
+
+verifier_port: 8077
+verifier_dp_size: 2
+verifier_tp_size: 8
+verifier_max_model_len: 32769
+verifier_max_num_seqs: 8
+verifier_max_batched_tokens: 32768
+total_seq_len: 32768
+request_timeout: 900
+max_retries: 3
+epochs: 5
+trainer_mode: smoke
+trainer_data_mode: online-cache
+smoke_run_id: FILL_UNIQUE_SMOKE_ID
+
+# No interactive action is required in either role.  The host wrapper performs
+# the trainer editable installation automatically and skips it for verifiers.
+install_speculators_verifier: false
+install_speculators_trainer: true
