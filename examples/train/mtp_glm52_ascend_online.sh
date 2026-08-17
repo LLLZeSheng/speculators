@@ -37,7 +37,7 @@ VERIFIER_PORT=${VERIFIER_PORT:-8077}
 VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-16}
 VERIFIER_DP_SIZE=${VERIFIER_DP_SIZE:-1}
 VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}
-VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-8}
+VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-1}
 VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32784}
 VERIFIER_GPU_MEMORY_UTILIZATION=${VERIFIER_GPU_MEMORY_UTILIZATION:-0.92}
 TARGET_LAYER_ID=${TARGET_LAYER_ID:-78}
@@ -82,7 +82,7 @@ export HCCL_EXEC_TIMEOUT=${HCCL_EXEC_TIMEOUT:-3600}
 export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-200}
 export OMP_PROC_BIND=${OMP_PROC_BIND:-false}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
-export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}
+export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:64}
 export VLLM_USE_V1=${VLLM_USE_V1:-1}
 export VLLM_ASCEND_ENABLE_FLASHCOMM1=${VLLM_ASCEND_ENABLE_FLASHCOMM1:-1}
 export VLLM_ASCEND_ENABLE_FUSED_MC2=${VLLM_ASCEND_ENABLE_FUSED_MC2:-0}
@@ -403,8 +403,8 @@ run_verifier() {
         --max-num-batched-tokens "$VERIFIER_MAX_BATCHED_TOKENS"
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
         "${quantization_args[@]}"
-        --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
-        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"multistream_overlap_shared_expert":true}'
+        --enforce-eager
+        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true}'
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then

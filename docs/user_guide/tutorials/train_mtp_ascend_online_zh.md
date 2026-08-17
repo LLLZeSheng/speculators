@@ -104,7 +104,7 @@ MANAGER_DRY_RUN=1 bash \
 total_seq_len: 32768
 verifier_max_model_len: 32769
 verifier_max_batched_tokens: 32784
-verifier_max_num_seqs: 8
+verifier_max_num_seqs: 1
 request_timeout: 900
 max_retries: 3
 ```
@@ -115,8 +115,9 @@ parallel 会把 profile token 数向上补齐到 16 的倍数，因此 batched-t
 上限并触发断言。
 每台 verifier 是 DP1 × TP16，满 32K 时实际运行 1 条；其余请求会排队。
 TP16 为 61 GiB NPU 留出足够的模型分片和 32K profile 激活空间。
-`MAX_NUM_SEQS=8` 主要为短样本保留调度空间，并不代表能同时运行 8 条
-32K。900 秒超时用于覆盖长 prefill、排队和 hidden-state 写盘时间。
+`MAX_NUM_SEQS=1`、eager 模式以及关闭 shared-expert 多流重叠用于给 61 GiB
+NPU 留出 32K prefill 激活空间。900 秒超时用于覆盖长 prefill、排队和
+hidden-state 写盘时间。
 
 YAML 同时明确记录容器行为：
 

@@ -126,9 +126,10 @@ intentional: hidden-state extraction sends one generation token. TP16 sequence
 parallel pads the profile size to a multiple of sixteen, so the batched-token
 budget is 32784 rather than 32769. DP1 x TP16 is required to leave enough
 per-device activation headroom on 61 GiB NPUs; each verifier node runs one
-full 32K prefill at a time and additional requests queue. `VERIFIER_MAX_NUM_SEQS=8`
-keeps capacity for shorter samples without claiming eight simultaneous 32K
-prefills.
+full 32K prefill at a time and additional requests queue. The memory-safe
+profile uses `VERIFIER_MAX_NUM_SEQS=1`, eager execution, and disables
+shared-expert multistream overlap to preserve activation headroom on 61 GiB
+NPUs.
 
 Set non-standard paths directly in YAML. With `nic_name: auto`, the wrapper
 resolves the interface separately on each host from its configured IP.
@@ -195,7 +196,7 @@ verifier_quantization_mode: ascend
 mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_max_model_len: 32769
 verifier_max_batched_tokens: 32784
-verifier_max_num_seqs: 8
+verifier_max_num_seqs: 1
 total_seq_len: 32768
 request_timeout: 900
 trainer_mode: smoke
