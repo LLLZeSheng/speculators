@@ -47,6 +47,9 @@ SCALAR_MAP = {
     "smoke_seq_len": "SMOKE_SEQ_LEN",
     "request_timeout": "REQUEST_TIMEOUT",
     "max_retries": "MAX_RETRIES",
+    "offline_collection_concurrency": "OFFLINE_COLLECTION_CONCURRENCY",
+    "offline_collection_max_samples": "OFFLINE_COLLECTION_MAX_SAMPLES",
+    "offline_validation_samples": "OFFLINE_VALIDATION_SAMPLES",
     "epochs": "EPOCHS",
     "fsdp_skip_initial_broadcast": "FSDP_SKIP_INITIAL_BROADCAST",
     "startup_heartbeat_seconds": "STARTUP_HEARTBEAT_SECONDS",
@@ -246,6 +249,18 @@ def validate(config: dict[str, str | list[str]]) -> None:
     for key in integer_keys:
         if key != "max_retries" and numbers[key] <= 0:
             raise ValueError(f"{key} must be positive")
+    for key in (
+        "offline_collection_concurrency",
+        "offline_collection_max_samples",
+        "offline_validation_samples",
+    ):
+        value = config.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.isdigit():
+            raise ValueError(f"{key} must be a non-negative integer")
+        if key == "offline_collection_concurrency" and int(value) <= 0:
+            raise ValueError("offline_collection_concurrency must be positive")
     if numbers["verifier_dp_size"] * numbers["verifier_tp_size"] != 16:
         raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
     if "verifier_gpu_memory_utilization" in config:

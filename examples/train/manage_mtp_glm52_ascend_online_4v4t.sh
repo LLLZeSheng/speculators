@@ -23,6 +23,9 @@ Commands:
   start-verifiers  Ensure all four verifiers are running; skip healthy/running ones.
   start-verifier   Ensure one verifier is running (requires --index 0..3).
   wait-verifiers   Wait until all verifier health endpoints return HTTP 200.
+  collect-offline  Start four resumable hidden-state collectors, one per verifier.
+  offline-status   Show collector jobs, logs, and current cache file count.
+  verify-offline   Require a complete cache and publish .offline-ready.json.
   smoke            Start the two-step smoke job on all trainer nodes.
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
@@ -33,6 +36,7 @@ Commands:
   restart-verifiers
                    Stop verifier jobs and restart only reused verifier containers.
   restart-trainers Stop trainer/smoke jobs and restart only reused trainer containers.
+  stop-collectors  Stop only offline collection jobs; keep verifiers running.
   stop             Stop cluster jobs; restart reused containers in existing mode.
 
 Options:
@@ -120,6 +124,9 @@ load_config() {
     DASHBOARD_AUTO_START=${DASHBOARD_AUTO_START:-1}
     DASHBOARD_LOG_FILE=${DASHBOARD_LOG_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.log}
     DASHBOARD_PID_FILE=${DASHBOARD_PID_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.pid}
+    OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-1}
+    OFFLINE_COLLECTION_MAX_SAMPLES=${OFFLINE_COLLECTION_MAX_SAMPLES:-0}
+    OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
 }
 
 verifier_hosts_for_trainer() {
@@ -203,6 +210,14 @@ start_node() {
     )
     case "$role" in
         verifier) command+=("VERIFIER_ID=$index") ;;
+        collector)
+            command+=(
+                "VERIFIER_ID=$index"
+                "VERIFIER_HOST=$host"
+                "OFFLINE_COLLECTION_RANK=$index"
+                "OFFLINE_COLLECTION_WORLD_SIZE=${#CLUSTER_VERIFIER_IPS[@]}"
+            )
+            ;;
         smoke | trainer)
             verifier_hosts=$(verifier_hosts_for_trainer "$index")
             verifier_host=${verifier_hosts%%,*}
@@ -335,6 +350,18 @@ ensure_verifiers() {
     for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
         ensure_verifier "$index"
     done
+}
+
+start_collectors() {
+    local index code
+    if [[ ${MANAGER_DRY_RUN:-0} != 1 ]]; then
+        for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+            code=$(verifier_health_code "${CLUSTER_VERIFIER_IPS[$index]}")
+            [[ $code == 200 ]] || \
+                fail "verifier $index is not healthy (HTTP ${code:-000}); run start-verifiers and wait-verifiers first"
+        done
+    fi
+    start_group collector "" CLUSTER_VERIFIER_IPS
 }
 
 wait_verifiers() {
@@ -494,10 +521,40 @@ show_role_status() {
 
 show_status() {
     show_role_status verifier CLUSTER_VERIFIER_IPS
+    show_role_status collector CLUSTER_VERIFIER_IPS
     show_role_status trainer CLUSTER_TRAINER_IPS
     show_role_status smoke CLUSTER_TRAINER_IPS
     printf '\n[dashboard]\n'
     dashboard_status
+}
+
+show_offline_status() {
+    show_role_status collector CLUSTER_VERIFIER_IPS
+    local host=${CLUSTER_VERIFIER_IPS[0]}
+    local container
+    container=$(container_for verifier 0)
+    printf '\n[offline-cache] host=%s path=%s\n' "$host" "$HIDDEN_STATES_PATH"
+    local command
+    command="find $HIDDEN_STATES_PATH -maxdepth 1 -name 'hs_*.safetensors' "
+    command+="-printf x 2>/dev/null | wc -c; "
+    command+="du -sh $HIDDEN_STATES_PATH 2>/dev/null || true"
+    remote "$host" \
+        "docker exec $(quote "$container") bash -lc $(quote "$command")" || true
+}
+
+verify_offline_cache() {
+    local host=${CLUSTER_VERIFIER_IPS[0]}
+    local container
+    container=$(container_for verifier 0)
+    local command="export PYTHONPATH=$(quote "$CONTAINER_REPO_PATH/src"):\${PYTHONPATH:-}; "
+    command+="python $(quote "$CONTAINER_REPO_PATH/scripts/check_offline_hidden_states.py") "
+    command+="--data $(quote "$DATA_PATH") --hidden-states $(quote "$HIDDEN_STATES_PATH") "
+    # Training consumes the complete dataset even when collection was capped
+    # for a pilot, so readiness must never accept only a sampled prefix.
+    command+="--max-samples 0 "
+    command+="--validate-samples $(quote "${OFFLINE_VALIDATION_SAMPLES:-8}") --write-ready-marker"
+    remote "$host" \
+        "docker exec $(quote "$container") bash -lc $(quote "$command")"
 }
 
 stop_role() {
@@ -544,6 +601,7 @@ restart_existing_role() {
 }
 
 restart_verifiers() {
+    stop_role collector CLUSTER_VERIFIER_IPS
     stop_role verifier CLUSTER_VERIFIER_IPS
     restart_existing_role verifier CLUSTER_VERIFIER_IPS
 }
@@ -555,6 +613,7 @@ restart_trainers() {
 }
 
 stop_cluster() {
+    stop_role collector CLUSTER_VERIFIER_IPS
     stop_role verifier CLUSTER_VERIFIER_IPS
     stop_role trainer CLUSTER_TRAINER_IPS
     stop_role smoke CLUSTER_TRAINER_IPS
@@ -598,6 +657,12 @@ case "$COMMAND" in
         start_dashboard
         wait_verifiers
         ;;
+    collect-offline)
+        start_collectors
+        start_dashboard
+        ;;
+    offline-status) show_offline_status ;;
+    verify-offline) verify_offline_cache ;;
     smoke)
         start_group smoke online-cache CLUSTER_TRAINER_IPS
         start_dashboard
@@ -607,6 +672,11 @@ case "$COMMAND" in
         start_dashboard
         ;;
     offline)
+        if [[ ${MANAGER_DRY_RUN:-0} != 1 ]]; then
+            verify_offline_cache
+        else
+            printf '[offline] dry-run skips cache validation\n'
+        fi
         start_group trainer offline CLUSTER_TRAINER_IPS
         start_dashboard
         ;;
@@ -616,6 +686,7 @@ case "$COMMAND" in
     stop-dashboard) stop_dashboard ;;
     restart-verifiers) restart_verifiers ;;
     restart-trainers) restart_trainers ;;
+    stop-collectors) stop_role collector CLUSTER_VERIFIER_IPS ;;
     stop) stop_cluster ;;
     -h | --help | help) usage ;;
     *) fail "unknown command: $COMMAND" ;;

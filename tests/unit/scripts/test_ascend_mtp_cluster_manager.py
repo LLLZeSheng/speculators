@@ -96,6 +96,37 @@ def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
     )
     assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-8192}" in result.stdout
     assert "SMOKE_SEQ_LEN=${SMOKE_SEQ_LEN:-8192}" in result.stdout
+    assert (
+        "OFFLINE_COLLECTION_CONCURRENCY="
+        "${OFFLINE_COLLECTION_CONCURRENCY:-1}" in result.stdout
+    )
+    assert (
+        "OFFLINE_COLLECTION_MAX_SAMPLES="
+        "${OFFLINE_COLLECTION_MAX_SAMPLES:-0}" in result.stdout
+    )
+
+
+def test_manager_dry_runs_four_offline_collectors(tmp_path: Path):
+    config = tmp_path / "cluster-8k.yaml"
+    _write_8k_yaml(config)
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "collect-offline", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "MANAGER_DRY_RUN": "1",
+            "DASHBOARD_AUTO_START": "0",
+        },
+    )
+
+    assert result.stdout.count("[start]") == 4
+    assert result.stdout.count("ROLE=collector") == 4
+    assert result.stdout.count("OFFLINE_COLLECTION_WORLD_SIZE=4") == 4
+    for rank in range(4):
+        assert f"OFFLINE_COLLECTION_RANK={rank}" in result.stdout
 
 
 def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():

@@ -153,8 +153,8 @@ resolve_nic_name() {
 resolve_nic_name
 
 case "$ROLE" in
-    preflight | verifier | trainer | smoke) ;;
-    *) fail "ROLE must be one of: preflight, verifier, trainer, smoke" ;;
+    preflight | verifier | collector | trainer | smoke) ;;
+    *) fail "ROLE must be one of: preflight, verifier, collector, trainer, smoke" ;;
 esac
 
 if [[ $INSTALL_SPECULATORS == auto ]]; then
@@ -162,7 +162,7 @@ if [[ $INSTALL_SPECULATORS == auto ]]; then
         trainer | smoke)
             INSTALL_SPECULATORS=${INSTALL_SPECULATORS_TRAINER:-0}
             ;;
-        verifier | preflight)
+        verifier | collector | preflight)
             INSTALL_SPECULATORS=${INSTALL_SPECULATORS_VERIFIER:-0}
             ;;
     esac
@@ -216,6 +216,8 @@ forward_vars=(
     VERIFIER_GPU_MEMORY_UTILIZATION TARGET_LAYER_ID NNODES NPROC_PER_NODE
     NODE_RANK MASTER_ADDR MASTER_PORT LOCAL_IP NIC_NAME RUN_ID TOTAL_SEQ_LEN
     EPOCHS LR WEIGHT_DECAY STEP_WEIGHT_BETA CHECKPOINT_STEPS TRAIN_DATA_RATIO
+    OFFLINE_COLLECTION_CONCURRENCY OFFLINE_COLLECTION_MAX_SAMPLES
+    OFFLINE_VALIDATION_SAMPLES OFFLINE_COLLECTION_WORLD_SIZE OFFLINE_COLLECTION_RANK
     FSDP_SKIP_INITIAL_BROADCAST STARTUP_HEARTBEAT_SECONDS
     NUM_WORKERS PREFETCH_FACTOR REQUEST_TIMEOUT MAX_RETRIES MAX_STEPS RUN_NAME TRAINER_DATA_MODE SMOKE_SAMPLES SMOKE_RUN_ID
     SMOKE_DATA_PATH SMOKE_SEQ_LEN MTP_PREPARE_TIMEOUT ASCEND_DEVICES EXPECTED_TORCH_NPU_VERSION

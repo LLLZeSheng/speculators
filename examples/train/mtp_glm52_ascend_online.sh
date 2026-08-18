@@ -63,6 +63,11 @@ NUM_WORKERS=${NUM_WORKERS:-1}
 PREFETCH_FACTOR=${PREFETCH_FACTOR:-2}
 REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-900}
 MAX_RETRIES=${MAX_RETRIES:-3}
+OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-1}
+OFFLINE_COLLECTION_MAX_SAMPLES=${OFFLINE_COLLECTION_MAX_SAMPLES:-0}
+OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
+OFFLINE_COLLECTION_WORLD_SIZE=${OFFLINE_COLLECTION_WORLD_SIZE:-4}
+OFFLINE_COLLECTION_RANK=${OFFLINE_COLLECTION_RANK:-${VERIFIER_ID:-0}}
 MAX_STEPS=${MAX_STEPS:-}
 RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
 # online-cache: generate missing hidden states once and persist them.
@@ -162,9 +167,9 @@ validate_role() {
     [[ $FSDP_SKIP_INITIAL_BROADCAST == 0 || $FSDP_SKIP_INITIAL_BROADCAST == 1 ]] || \
         fail "FSDP_SKIP_INITIAL_BROADCAST must be 0 or 1"
     case "$ROLE" in
-        preflight | verifier | trainer) ;;
+        preflight | verifier | collector | trainer) ;;
         smoke) require_value SMOKE_RUN_ID ;;
-        *) fail "ROLE must be one of: preflight, verifier, trainer, smoke" ;;
+        *) fail "ROLE must be one of: preflight, verifier, collector, trainer, smoke" ;;
     esac
 }
 
@@ -262,6 +267,9 @@ Resolved Ascend MTP3 configuration:
   REQUEST_TIMEOUT=$REQUEST_TIMEOUT MAX_RETRIES=$MAX_RETRIES
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
   TRAINER_DATA_MODE=$TRAINER_DATA_MODE
+  OFFLINE_COLLECTION_CONCURRENCY=$OFFLINE_COLLECTION_CONCURRENCY
+  OFFLINE_COLLECTION_MAX_SAMPLES=$OFFLINE_COLLECTION_MAX_SAMPLES
+  OFFLINE_COLLECTION_WORLD_SIZE=$OFFLINE_COLLECTION_WORLD_SIZE OFFLINE_COLLECTION_RANK=$OFFLINE_COLLECTION_RANK
 EOF
 }
 
@@ -458,6 +466,42 @@ run_verifier() {
     if [[ $DRY_RUN == 1 ]]; then
         printf 'ASCEND_RT_VISIBLE_DEVICES=%s\n' "$ASCEND_RT_VISIBLE_DEVICES"
     fi
+    run_logged "$log_file" "${cmd[@]}"
+}
+
+run_collector() {
+    require_value VERIFIER_HOST
+    [[ $OFFLINE_COLLECTION_CONCURRENCY =~ ^[1-9][0-9]*$ ]] || \
+        fail "OFFLINE_COLLECTION_CONCURRENCY must be a positive integer"
+    [[ $OFFLINE_COLLECTION_MAX_SAMPLES =~ ^[0-9]+$ ]] || \
+        fail "OFFLINE_COLLECTION_MAX_SAMPLES must be a non-negative integer"
+    [[ $OFFLINE_COLLECTION_WORLD_SIZE =~ ^[1-9][0-9]*$ ]] || \
+        fail "OFFLINE_COLLECTION_WORLD_SIZE must be a positive integer"
+    [[ $OFFLINE_COLLECTION_RANK =~ ^[0-9]+$ ]] || \
+        fail "OFFLINE_COLLECTION_RANK must be a non-negative integer"
+    ((OFFLINE_COLLECTION_RANK < OFFLINE_COLLECTION_WORLD_SIZE)) || \
+        fail "OFFLINE_COLLECTION_RANK must be smaller than OFFLINE_COLLECTION_WORLD_SIZE"
+
+    local endpoint="http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+    run_preflight --endpoint "$endpoint"
+    local -a cmd=(
+        "$PYTHON_BIN" "$REPO_ROOT/scripts/data_generation_offline.py"
+        --model "$SERVED_MODEL_NAME"
+        --endpoint "$endpoint"
+        --preprocessed-data "$DATA_PATH"
+        --output "$HIDDEN_STATES_PATH"
+        --concurrency "$OFFLINE_COLLECTION_CONCURRENCY"
+        --request-timeout "$REQUEST_TIMEOUT"
+        --max-retries "$MAX_RETRIES"
+        --world-size "$OFFLINE_COLLECTION_WORLD_SIZE"
+        --rank "$OFFLINE_COLLECTION_RANK"
+        --fail-on-error
+        --validate-outputs
+    )
+    if ((OFFLINE_COLLECTION_MAX_SAMPLES > 0)); then
+        cmd+=(--max-samples "$OFFLINE_COLLECTION_MAX_SAMPLES")
+    fi
+    local log_file="$LOG_ROOT/offline-collection/collector${OFFLINE_COLLECTION_RANK}.log"
     run_logged "$log_file" "${cmd[@]}"
 }
 
@@ -665,6 +709,7 @@ show_config
 case "$ROLE" in
     preflight) run_preflight ;;
     verifier) run_verifier ;;
+    collector) run_collector ;;
     trainer) run_trainer trainer ;;
     smoke) run_trainer smoke ;;
 esac

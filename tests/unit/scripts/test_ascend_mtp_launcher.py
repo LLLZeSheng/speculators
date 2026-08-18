@@ -164,6 +164,30 @@ def test_trainer_offline_mode_never_contacts_verifier():
     assert "--force-generate" not in train_command
 
 
+def test_offline_collector_uses_resumable_four_way_partition():
+    result = _run(
+        "collector",
+        VERIFIER_ID="2",
+        OFFLINE_COLLECTION_RANK="2",
+        OFFLINE_COLLECTION_WORLD_SIZE="4",
+        OFFLINE_COLLECTION_CONCURRENCY="1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = next(
+        line
+        for line in result.stdout.splitlines()
+        if "data_generation_offline.py" in line
+    )
+    assert "--endpoint http://10.0.0.10:8077/v1" in command
+    assert "--world-size 4" in command
+    assert "--rank 2" in command
+    assert "--concurrency 1" in command
+    assert "--fail-on-error" in command
+    assert "--validate-outputs" in command
+    assert "--max-samples" not in command
+
+
 def test_verifier_preflight_uses_dp_times_tp_device_count():
     result = _run(
         "verifier", VERIFIER_TP_SIZE="8", VERIFIER_DP_SIZE="1", NPROC_PER_NODE="16"

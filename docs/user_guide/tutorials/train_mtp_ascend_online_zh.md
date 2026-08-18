@@ -426,6 +426,51 @@ distributed checkpoint load；若要对比诊断，可临时设置为 `false` �
 
 ## 7. epoch 1 之后严格离线恢复
 
+如果在线训练的首批请求受共享存储写入影响，可以先独立完成整套 hidden-state
+采集，再启动训练。四个 collector 分别使用对应 verifier，并按数据索引切成四个
+互不重叠的连续分片；重复执行会跳过已经存在的 `hs_<index>.safetensors`：
+
+```bash
+CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t-8k.yaml
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+
+bash "$MANAGER" start-verifiers --config "$CONFIG"
+bash "$MANAGER" wait-verifiers --config "$CONFIG"
+bash "$MANAGER" collect-offline --config "$CONFIG"
+bash "$MANAGER" offline-status --config "$CONFIG"
+```
+
+全部 collector 结束后，先验证文件数量，并抽样加载 safetensors 检查 token 和
+hidden-state 长度。只有检查通过才会原子写入 `.offline-ready.json`：
+
+```bash
+bash "$MANAGER" verify-offline --config "$CONFIG"
+bash "$MANAGER" offline --config "$CONFIG"
+```
+
+`offline` 命令本身也会再次执行完整性检查，缓存不完整时不会启动任何 trainer。
+采集中断时重新执行 `collect-offline` 即可续传；如需只停止 collector 而保留
+verifier，执行：
+
+```bash
+bash "$MANAGER" stop-collectors --config "$CONFIG"
+```
+
+8K YAML 中相关参数为：
+
+```yaml
+offline_collection_concurrency: 1
+offline_collection_max_samples: 0  # 0 表示完整数据集
+offline_validation_samples: 8
+```
+
+可以把 `offline_collection_max_samples` 临时设为较小值验证链路，但
+`verify-offline` 始终按完整数据集检查，因此试采集结果不会被误用于正式训练。
+正式采集前恢复为 `0` 并再次执行 `collect-offline`。
+
+当前 verifier 的 `max_num_seqs` 为 1，因此 collector 并发默认也是 1。提高并发
+前应同步提高 verifier 的请求容量，并确认 NFS 写入没有成为瓶颈。
+
 epoch 1 已完整遍历训练集和验证集后，可以使用：
 
 ```bash
