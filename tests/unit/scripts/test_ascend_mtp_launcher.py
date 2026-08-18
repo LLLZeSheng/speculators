@@ -116,6 +116,18 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--on-missing generate" in result.stdout
 
 
+def test_smoke_can_exercise_full_8k_sequence_length():
+    result = _run(
+        "smoke",
+        TOTAL_SEQ_LEN="8192",
+        SMOKE_SEQ_LEN="8192",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--total-seq-len 8192" in result.stdout
+    assert "--log-freq 1" in result.stdout
+
+
 def test_trainer_accepts_two_verifier_endpoints_for_local_rank_fanout():
     result = _run(
         "trainer",

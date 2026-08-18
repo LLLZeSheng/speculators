@@ -1,0 +1,66 @@
+# Four-verifier/four-trainer 8K profile. It intentionally uses separate data,
+# hidden-state, checkpoint, and log paths from the 32K profile.
+version: 1
+cluster_name: glm52-online-mtp3-8k
+
+verifier_ips:
+  - FILL_VERIFIER_0_IP
+  - FILL_VERIFIER_1_IP
+  - FILL_VERIFIER_2_IP
+  - FILL_VERIFIER_3_IP
+trainer_ips:
+  - FILL_TRAINER_0_IP
+  - FILL_TRAINER_1_IP
+  - FILL_TRAINER_2_IP
+  - FILL_TRAINER_3_IP
+
+container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_mode: create
+# existing_container_name: glm52-w4a8-mg13-speculator-training
+container_name_prefix: glm52-w4a8-mg13-speculator-training
+container_repo_path: /kos_ulan/lzs/spec_train/speculators
+repo_path: /kos_ulan/lzs/spec_train/speculators
+shared_root: /kos_ulan
+nic_name: auto
+
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /kos_ulan:/kos_ulan
+  - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
+  - /root/.cache:/root/.cache
+
+verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+verifier_quantization_mode: ascend
+mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
+hidden_states_path: /kos_ulan/lzs/spec_train/hidden_states/glm52-w4a8-mg13-online-8k
+output_path: /kos_ulan/lzs/spec_train/ckpts/glm52-w4a8-mg13-8k
+log_root: /kos_ulan/lzs/spec_train/logs/glm52-w4a8-mg13-8k
+
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+
+verifier_port: 8077
+verifier_dp_size: 1
+verifier_tp_size: 16
+verifier_max_model_len: 8193
+verifier_max_num_seqs: 1
+# TP16 sequence parallel pads 8193 to 8208.
+verifier_max_batched_tokens: 8208
+verifier_gpu_memory_utilization: 0.90
+total_seq_len: 8192
+# Unlike the default smoke profile, this exercises a real 8K training batch.
+smoke_seq_len: 8192
+request_timeout: 900
+max_retries: 3
+epochs: 5
+fsdp_skip_initial_broadcast: true
+startup_heartbeat_seconds: 30
+trainer_mode: smoke
+trainer_data_mode: online-cache
+smoke_run_id: FILL_UNIQUE_SMOKE_ID
+
+install_speculators_verifier: false
+install_speculators_trainer: false

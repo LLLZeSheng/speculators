@@ -70,6 +70,7 @@ RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
 TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-online-cache}
 
 SMOKE_SAMPLES=${SMOKE_SAMPLES:-256}
+SMOKE_SEQ_LEN=${SMOKE_SEQ_LEN:-1024}
 SMOKE_RUN_ID=${SMOKE_RUN_ID:-}
 SMOKE_DATA_PATH=${SMOKE_DATA_PATH:-${SHARED_ROOT}/spec_train/smoke/glm52-mtp3-tokens-${SMOKE_SAMPLES}-${SMOKE_RUN_ID:-unset}}
 MTP_PREPARE_TIMEOUT=${MTP_PREPARE_TIMEOUT:-3600}
@@ -187,6 +188,9 @@ validate_trainer_topology() {
     [[ $NODE_RANK =~ ^[0-9]+$ ]] || fail "NODE_RANK must be an integer"
     ((NODE_RANK >= 0 && NODE_RANK < NNODES)) || \
         fail "NODE_RANK must be in [0, $((NNODES - 1))]"
+    [[ $SMOKE_SEQ_LEN =~ ^[0-9]+$ ]] || fail "SMOKE_SEQ_LEN must be an integer"
+    ((SMOKE_SEQ_LEN > 0 && SMOKE_SEQ_LEN <= TOTAL_SEQ_LEN)) || \
+        fail "SMOKE_SEQ_LEN must be in [1, TOTAL_SEQ_LEN]"
     if [[ -n $LOCAL_IP || -n $NIC_NAME ]]; then
         require_value LOCAL_IP
         require_value NIC_NAME
@@ -253,7 +257,8 @@ Resolved Ascend MTP3 configuration:
   VLLM_HOST_IP=${VLLM_HOST_IP:-<auto>}
   VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE
   VERIFIER_MAX_MODEL_LEN=$VERIFIER_MAX_MODEL_LEN VERIFIER_MAX_BATCHED_TOKENS=$VERIFIER_MAX_BATCHED_TOKENS
-  VERIFIER_MAX_NUM_SEQS=$VERIFIER_MAX_NUM_SEQS TOTAL_SEQ_LEN=$TOTAL_SEQ_LEN
+  VERIFIER_MAX_NUM_SEQS=$VERIFIER_MAX_NUM_SEQS VERIFIER_GPU_MEMORY_UTILIZATION=$VERIFIER_GPU_MEMORY_UTILIZATION
+  TOTAL_SEQ_LEN=$TOTAL_SEQ_LEN SMOKE_SEQ_LEN=$SMOKE_SEQ_LEN
   REQUEST_TIMEOUT=$REQUEST_TIMEOUT MAX_RETRIES=$MAX_RETRIES
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
   TRAINER_DATA_MODE=$TRAINER_DATA_MODE
@@ -566,7 +571,7 @@ run_trainer() {
         effective_data=$SMOKE_DATA_PATH
         effective_output="${OUTPUT_PATH}-smoke-${SMOKE_RUN_ID}"
         effective_log_root="${LOG_ROOT}-smoke-${SMOKE_RUN_ID}"
-        effective_seq_len=1024
+        effective_seq_len=$SMOKE_SEQ_LEN
         effective_max_steps=2
         effective_log_freq=1
         effective_run_name="${RUN_NAME}-smoke-${SMOKE_RUN_ID}"

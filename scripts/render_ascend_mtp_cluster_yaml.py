@@ -42,7 +42,9 @@ SCALAR_MAP = {
     "verifier_max_model_len": "VERIFIER_MAX_MODEL_LEN",
     "verifier_max_num_seqs": "VERIFIER_MAX_NUM_SEQS",
     "verifier_max_batched_tokens": "VERIFIER_MAX_BATCHED_TOKENS",
+    "verifier_gpu_memory_utilization": "VERIFIER_GPU_MEMORY_UTILIZATION",
     "total_seq_len": "TOTAL_SEQ_LEN",
+    "smoke_seq_len": "SMOKE_SEQ_LEN",
     "request_timeout": "REQUEST_TIMEOUT",
     "max_retries": "MAX_RETRIES",
     "epochs": "EPOCHS",
@@ -246,6 +248,28 @@ def validate(config: dict[str, str | list[str]]) -> None:
             raise ValueError(f"{key} must be positive")
     if numbers["verifier_dp_size"] * numbers["verifier_tp_size"] != 16:
         raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
+    if "verifier_gpu_memory_utilization" in config:
+        utilization = config["verifier_gpu_memory_utilization"]
+        if not isinstance(utilization, str):
+            raise ValueError(
+                "verifier_gpu_memory_utilization must be a number in (0, 1]"
+            )
+        try:
+            utilization_value = float(utilization)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "verifier_gpu_memory_utilization must be a number in (0, 1]"
+            ) from error
+        if not 0 < utilization_value <= 1:
+            raise ValueError(
+                "verifier_gpu_memory_utilization must be a number in (0, 1]"
+            )
+    if "smoke_seq_len" in config:
+        smoke_seq_len = config["smoke_seq_len"]
+        if not isinstance(smoke_seq_len, str) or not smoke_seq_len.isdigit():
+            raise ValueError("smoke_seq_len must be a positive integer")
+        if not 0 < int(smoke_seq_len) <= numbers["total_seq_len"]:
+            raise ValueError("smoke_seq_len must be in [1, total_seq_len]")
     if numbers["verifier_max_model_len"] <= numbers["total_seq_len"]:
         raise ValueError("verifier_max_model_len must exceed total_seq_len")
     if (

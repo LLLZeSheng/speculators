@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the Nuoya 2K/8K JSONL mixture as a resumable 32K HF dataset."""
+"""Prepare a selected Nuoya JSONL mixture as a resumable HF dataset."""
 
 from __future__ import annotations
 
@@ -11,13 +11,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-
-from datasets import concatenate_datasets, load_from_disk
-
-from speculators.train.vocab_mapping import (
-    combine_token_frequency_distributions,
-)
-
 
 DEFAULT_SOURCES = (
     "/kos_ulan/lzs/spec_train/dataset/raw_conversions/average-2k-nuoya",
@@ -39,6 +32,21 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--source", action="append", dest="sources")
+    parser.add_argument(
+        "--source-file-limit",
+        action="append",
+        type=int,
+        dest="source_file_limits",
+        help=(
+            "Select only the first N sorted JSON/JSONL files from the matching "
+            "--source. Repeat once per --source. Omit to use every file."
+        ),
+    )
+    parser.add_argument(
+        "--jsonl-only",
+        action="store_true",
+        help="Discover only .jsonl files inside source directories.",
+    )
     parser.add_argument(
         "--model", default=os.environ.get("MTP_INIT_MODEL_PATH", DEFAULT_MODEL)
     )
@@ -63,16 +71,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_files(sources: list[str]) -> list[Path]:
+def discover_files(
+    sources: list[str],
+    source_file_limits: list[int] | None = None,
+    *,
+    jsonl_only: bool = False,
+) -> list[Path]:
+    if source_file_limits is not None and len(source_file_limits) != len(sources):
+        raise ValueError(
+            "--source-file-limit must be repeated exactly once per --source"
+        )
     files: list[Path] = []
-    for value in sources:
+    for index, value in enumerate(sources):
         source = Path(value)
-        if source.is_file() and source.suffix in {".json", ".jsonl"}:
-            files.append(source)
+        allowed_suffixes = {".jsonl"} if jsonl_only else {".json", ".jsonl"}
+        if source.is_file() and source.suffix in allowed_suffixes:
+            discovered = [source]
         elif source.is_dir():
-            files.extend(sorted((*source.rglob("*.json"), *source.rglob("*.jsonl"))))
+            discovered = list(source.rglob("*.jsonl"))
+            if not jsonl_only:
+                discovered.extend(source.rglob("*.json"))
+            discovered.sort()
         else:
             raise FileNotFoundError(f"source does not exist or is not JSON: {source}")
+        if source_file_limits is not None:
+            limit = source_file_limits[index]
+            if limit <= 0:
+                raise ValueError("--source-file-limit values must be positive")
+            if len(discovered) < limit:
+                raise ValueError(
+                    f"source {source} has {len(discovered)} JSON/JSONL files, "
+                    f"fewer than requested limit {limit}"
+                )
+            discovered = discovered[:limit]
+        files.extend(discovered)
     resolved = [path.resolve() for path in files]
     if not resolved:
         raise ValueError("no JSON/JSONL files were discovered")
@@ -114,6 +146,8 @@ def prepare_shard(
     args: argparse.Namespace,
     prepare_script: Path,
 ) -> None:
+    from datasets import load_from_disk  # noqa: PLC0415
+
     marker = destination / ".complete"
     if marker.is_file():
         dataset = load_from_disk(str(destination))
@@ -182,6 +216,12 @@ def collect_stats(dataset) -> dict[str, int | float]:
 def publish_dataset(
     shard_paths: list[Path], sources: list[Path], args: argparse.Namespace
 ) -> None:
+    from datasets import concatenate_datasets, load_from_disk  # noqa: PLC0415
+
+    from speculators.train.vocab_mapping import (  # noqa: PLC0415
+        combine_token_frequency_distributions,
+    )
+
     output = Path(args.output)
     if output.exists():
         if not args.overwrite_output:
@@ -236,7 +276,14 @@ def main() -> None:
         raise ValueError("--seq-length must be positive")
     if args.num_preprocessing_workers <= 0 or args.save_workers <= 0:
         raise ValueError("worker counts must be positive")
-    sources = discover_files(args.sources or list(DEFAULT_SOURCES))
+    source_values = args.sources or list(DEFAULT_SOURCES)
+    if args.source_file_limits and not args.sources:
+        raise ValueError("--source-file-limit requires explicit --source values")
+    sources = discover_files(
+        source_values,
+        args.source_file_limits,
+        jsonl_only=args.jsonl_only,
+    )
     for source in sources:
         validate_first_row(source)
     output = Path(args.output)

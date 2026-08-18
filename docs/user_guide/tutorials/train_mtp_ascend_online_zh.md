@@ -239,6 +239,53 @@ nohup python scripts/prepare_glm52_nuoya_32k.py \
 输出中的 `conversion_manifest.json` 会记录最终条数、平均长度、P50/P90/P99、
 总 token 数，以及 GLM-5.2 单层 BF16 hidden-state 缓存的预计容量。
 
+### 8K 小规模混合数据配置
+
+仓库还提供一套不覆盖上述 32K 数据的 8K 配置。它严格选择按路径排序后的
+Nuoya 前 5 个 JSONL，以及 `average-8k` 目录中的第 1 个 JSONL：
+
+```bash
+cd /kos_ulan/lzs/spec_train/speculators
+nohup bash examples/train/prepare_glm52_nuoya_8k.sh \
+  > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-first5-long1-8k.log 2>&1 &
+```
+
+默认输出为：
+
+```text
+/kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
+```
+
+实际选中的 6 个源文件会写入输出目录的 `conversion_manifest.json`。如源目录
+不足 5 个或 1 个 JSONL，脚本会直接失败，不会悄悄生成不完整数据。
+
+复制独立的 8K 集群模板并填写 IP、容器模式和 smoke ID：
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_4v4t_8k.example.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t-8k.yaml
+```
+
+该模板使用以下长度预算：
+
+```yaml
+data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
+verifier_max_model_len: 8193
+verifier_max_batched_tokens: 8208
+verifier_gpu_memory_utilization: 0.90
+total_seq_len: 8192
+smoke_seq_len: 8192
+```
+
+`8193` 给 hidden-state 请求保留 1 个生成 token，TP16 再向上补齐到 `8208`。
+8K 模板使用独立的 hidden-state、checkpoint 和日志目录，避免命中此前不同数据
+或长度产生的缓存。切换配置后必须重启 verifier 才能让新的模型长度生效。
+
+需要注意：8K 会显著降低 verifier KV cache 和训练 forward/backward 激活内存，
+但不会降低 `fully_shard()` 把完整 MoE 参数搬上 NPU 时的初始化峰值。如果仍在
+`_move_states_to_device` 申请 6 GiB 处 OOM，应先清理旧 NPU 进程，或继续改造
+FSDP 的 CPU/meta 分片加载流程。
+
 ## 3. 一键预检
 
 ```bash
@@ -311,8 +358,9 @@ bash "$MANAGER" status
 
 smoke 会按训练 world size 自动准备足够样本（64-rank 时至少 256 条）、训练
 两步，并删除临时生成的 hidden states，不会污染正式缓存。smoke 会把
-`log_freq` 自动设为 1，因此两步都会记录 step/loss。必须确认所有 trainer 的
-smoke 容器都正常退出，且日志中没有：
+`log_freq` 自动设为 1，因此两步都会记录 step/loss。默认 smoke 长度为 1024，
+也可用 YAML 的 `smoke_seq_len` 覆盖；8K 模板将它设为 8192。必须确认所有
+trainer 的 smoke 容器都正常退出，且日志中没有：
 
 ```text
 Traceback

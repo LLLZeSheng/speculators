@@ -9,6 +9,10 @@ WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
 LAUNCHER = REPO_ROOT / "examples/train/mtp_glm52_ascend_online.sh"
 TEMPLATE = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t.example.yaml"
 TEMPLATE_4V2T = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v2t.example.yaml"
+TEMPLATE_8K = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t_8k.example.yaml"
+)
+RENDERER = REPO_ROOT / "scripts/render_ascend_mtp_cluster_yaml.py"
 
 
 def _write_user_yaml(path: Path) -> None:
@@ -45,6 +49,53 @@ def _write_4v2t_yaml(path: Path) -> None:
     for old, new in replacements.items():
         text = text.replace(old, new)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_8k_yaml(path: Path) -> None:
+    text = TEMPLATE_8K.read_text(encoding="utf-8")
+    replacements = {
+        "FILL_VERIFIER_0_IP": "10.0.0.1",
+        "FILL_VERIFIER_1_IP": "10.0.0.2",
+        "FILL_VERIFIER_2_IP": "10.0.0.3",
+        "FILL_VERIFIER_3_IP": "10.0.0.4",
+        "FILL_TRAINER_0_IP": "10.0.1.1",
+        "FILL_TRAINER_1_IP": "10.0.1.2",
+        "FILL_TRAINER_2_IP": "10.0.1.3",
+        "FILL_TRAINER_3_IP": "10.0.1.4",
+        "FILL_UNIQUE_SMOKE_ID": "unit-test-8k",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
+    config = tmp_path / "cluster-8k.yaml"
+    _write_8k_yaml(config)
+
+    result = subprocess.run(
+        ["python", str(RENDERER), "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (
+        "DATA_PATH=${DATA_PATH:-/kos_ulan/lzs/spec_train/dataset/hf/"
+        in result.stdout
+    )
+    assert "nuoya-first5-long1-8k}" in result.stdout
+    assert "VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-8193}" in result.stdout
+    assert (
+        "VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-8208}"
+        in result.stdout
+    )
+    assert (
+        "VERIFIER_GPU_MEMORY_UTILIZATION="
+        "${VERIFIER_GPU_MEMORY_UTILIZATION:-0.90}" in result.stdout
+    )
+    assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-8192}" in result.stdout
+    assert "SMOKE_SEQ_LEN=${SMOKE_SEQ_LEN:-8192}" in result.stdout
 
 
 def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
