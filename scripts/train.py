@@ -70,9 +70,30 @@ def set_seed(seed: int, deterministic: bool = False):
 
 
 def empty_accelerator_cache() -> None:
-    """Release unused memory from the active CUDA or private-use accelerator."""
-    if torch.accelerator.current_accelerator() is not None:
-        torch.accelerator.empty_cache()
+    """Best-effort release of unused accelerator memory.
+
+    torch 2.10's generic ``torch.accelerator.empty_cache`` assumes a native
+    ``DeviceAllocator`` and asserts for the torch_npu private-use allocator.
+    Use torch_npu's backend API on NPU and never turn successful training into
+    a failed job merely because optional teardown cleanup is unsupported.
+    """
+    accelerator = torch.accelerator.current_accelerator()
+    if accelerator is None:
+        return
+
+    try:
+        if getattr(accelerator, "type", None) == "npu":
+            import torch_npu  # noqa: PLC0415
+
+            torch_npu.npu.empty_cache()
+        else:
+            torch.accelerator.empty_cache()
+    except (ImportError, RuntimeError) as error:
+        warnings.warn(
+            f"Accelerator cache cleanup was skipped: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _maybe_apply_mrope_full_head_hack(
