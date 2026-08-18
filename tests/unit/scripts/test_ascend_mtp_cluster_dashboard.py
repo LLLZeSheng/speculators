@@ -82,5 +82,36 @@ def test_cluster_snapshot_uses_shared_orchestrator_logs(tmp_path: Path):
     assert snapshot["trainers"][0]["state"] == "running"
     assert len(snapshot["verifiers"]) == 4
     assert len(snapshot["trainers"]) == 4
+    assert snapshot["summary"]["total_verifiers"] == 4
+    assert snapshot["summary"]["total_trainers"] == 4
     json.dumps(snapshot)
     assert "/api/status" in HTML
+
+
+def test_cluster_snapshot_supports_two_trainers(tmp_path: Path):
+    shared = tmp_path / "shared"
+    (shared / "spec_train/logs/orchestrator").mkdir(parents=True)
+    detailed = tmp_path / "detailed"
+    detailed.mkdir()
+    config = tmp_path / "cluster-4v2t.yaml"
+    config.write_text(
+        "version: 1\n"
+        "cluster_name: dashboard-4v2t\n"
+        "container_name_prefix: test-mtp\n"
+        f"shared_root: {shared}\n"
+        f"log_root: {detailed}\n"
+        "verifier_port: 8077\n"
+        "verifier_ips:\n"
+        "  - 10.0.0.1\n  - 10.0.0.2\n  - 10.0.0.3\n  - 10.0.0.4\n"
+        "trainer_ips:\n"
+        "  - 10.0.1.1\n  - 10.0.1.2\n",
+        encoding="utf-8",
+    )
+
+    snapshot = ClusterMonitor(config, probe=False).snapshot()
+
+    assert len(snapshot["verifiers"]) == 4
+    assert len(snapshot["trainers"]) == 2
+    assert snapshot["summary"]["total_verifiers"] == 4
+    assert snapshot["summary"]["total_trainers"] == 2
+    assert "d.summary.total_trainers" in HTML

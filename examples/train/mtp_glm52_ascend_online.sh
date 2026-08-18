@@ -31,6 +31,7 @@ VERIFIER_QUANTIZATION_MODE=${VERIFIER_QUANTIZATION_MODE:-ascend}
 
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-glm52-w4a8c8-verifier}
 VERIFIER_HOST=${VERIFIER_HOST:-}
+VERIFIER_HOSTS=${VERIFIER_HOSTS:-$VERIFIER_HOST}
 VERIFIER_ID=${VERIFIER_ID:-0}
 VERIFIER_BIND_HOST=${VERIFIER_BIND_HOST:-0.0.0.0}
 VERIFIER_PORT=${VERIFIER_PORT:-8077}
@@ -176,7 +177,7 @@ validate_verifier_quantization_mode() {
 }
 
 validate_trainer_topology() {
-    require_value VERIFIER_HOST
+    require_value VERIFIER_HOSTS
     require_value MASTER_ADDR
     require_value NODE_RANK
     [[ $NODE_RANK =~ ^[0-9]+$ ]] || fail "NODE_RANK must be an integer"
@@ -190,6 +191,19 @@ validate_trainer_topology() {
         export TP_SOCKET_IFNAME=$NIC_NAME
         export HCCL_SOCKET_IFNAME=$NIC_NAME
     fi
+}
+
+build_verifier_endpoints() {
+    local -a hosts
+    IFS=, read -r -a hosts <<<"$VERIFIER_HOSTS"
+    local host
+    local -a endpoints=()
+    for host in "${hosts[@]}"; do
+        [[ -n $host ]] || fail "VERIFIER_HOSTS contains an empty address"
+        endpoints+=("http://${host}:${VERIFIER_PORT}/v1")
+    done
+    local IFS=,
+    printf '%s' "${endpoints[*]}"
 }
 
 validate_trainer_data_mode() {
@@ -228,7 +242,7 @@ Resolved Ascend MTP3 configuration:
   VERIFIER_METADATA_PATH=$VERIFIER_METADATA_PATH
   VERIFIER_RUNTIME_ROOT=$VERIFIER_RUNTIME_ROOT
   VERIFIER_QUANTIZATION_MODE=$VERIFIER_QUANTIZATION_MODE
-  VERIFIER_ID=$VERIFIER_ID VERIFIER_HOST=${VERIFIER_HOST:-<unset>} VERIFIER_PORT=$VERIFIER_PORT
+  VERIFIER_ID=$VERIFIER_ID VERIFIER_HOSTS=${VERIFIER_HOSTS:-<unset>} VERIFIER_PORT=$VERIFIER_PORT
   MASTER_ADDR=${MASTER_ADDR:-<unset>} MASTER_PORT=$MASTER_PORT
   NNODES=$NNODES NPROC_PER_NODE=$NPROC_PER_NODE NODE_RANK=${NODE_RANK:-<unset>}
   LOCAL_IP=${LOCAL_IP:-<auto>} NIC_NAME=${NIC_NAME:-<auto>}
@@ -515,8 +529,15 @@ run_trainer() {
     validate_trainer_topology
     validate_trainer_data_mode
     wait_for_marker "$VERIFIER_METADATA_PATH/.ready" "verifier metadata"
+    local vllm_endpoints
+    vllm_endpoints=$(build_verifier_endpoints)
     if [[ $mode == smoke || $TRAINER_DATA_MODE == online-cache ]]; then
-        run_preflight --endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+        local -a endpoint_list
+        IFS=, read -r -a endpoint_list <<<"$vllm_endpoints"
+        local endpoint
+        for endpoint in "${endpoint_list[@]}"; do
+            run_preflight --endpoint "$endpoint"
+        done
     else
         run_preflight
     fi
@@ -555,7 +576,7 @@ run_trainer() {
     )
     if [[ $mode == smoke ]]; then
         hidden_state_args+=(
-            --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+            --vllm-endpoint "$vllm_endpoints"
             --on-missing generate
             --on-generate delete
             --force-generate
@@ -563,7 +584,7 @@ run_trainer() {
         )
     elif [[ $TRAINER_DATA_MODE == online-cache ]]; then
         hidden_state_args+=(
-            --vllm-endpoint "http://${VERIFIER_HOST}:${VERIFIER_PORT}/v1"
+            --vllm-endpoint "$vllm_endpoints"
             --on-missing generate
             --on-generate cache
             --on-generation-error raise

@@ -1,7 +1,8 @@
-# 八台 Ascend 910C 在线训练 GLM-5.2 MTP3
+# Ascend 910C 多机在线训练 GLM-5.2 MTP3
 
-本文是 4 台 verifier + 4 台 trainer 的生产操作说明。每台机器使用 16
-张 NPU：verifier 采用 DP1 × TP16，四台 trainer 组成 64-rank FSDP 训练任务。
+本文支持 4 台 verifier + 4 台 trainer（64-rank FSDP）以及新增的 4 台
+verifier + 2 台 trainer（32-rank FSDP）。每台机器使用 16 张 NPU，verifier
+采用 DP1 × TP16。原有 4V4T 配置和行为保持不变。
 
 数据生命周期如下：
 
@@ -41,7 +42,7 @@ ModelSlim 索引）读取 MTP，并在转换前拒绝任何整数量化的可训
 - 相同的 `/kos_ulan` 挂载；
 - 相同的代码路径；
 - 可互通的训练网络；
-- 控制节点到八台机器的免密 SSH；
+- 控制节点到所有配置机器的免密 SSH；
 - Docker 和 16 张可用 Ascend NPU。
 
 ## 2. 自己定义并维护 YAML
@@ -57,10 +58,22 @@ cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
 vim /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
+如果使用 4 verifier + 2 trainer，改用独立模板：
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_4v2t.example.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v2t.yaml
+```
+
+4V2T 不需要其他开关。manager 自动设置 `NNODES=2`，trainer0 的本地 rank
+在 verifier0/2 之间轮询，trainer1 的本地 rank 在 verifier1/3 之间轮询，
+因此四台 verifier 都会参与在线 hidden-state 生成。4V4T 仍按 trainer `i`
+对应 verifier `i`。
+
 需要自行填写或确认：
 
 - `verifier_ips` 中四台 verifier 的 IP；
-- `trainer_ips` 中四台 trainer 的 IP；
+- `trainer_ips` 中两台或四台 trainer 的 IP；
 - `container_mode`、容器名称、镜像和挂载列表；
 - 代码、模型、数据、hidden states、checkpoint 和日志路径；
 - 所有 `FILL_*` 占位值必须被替换；
@@ -144,7 +157,7 @@ install_speculators_trainer: false
 `container_mounts` 追加 `宿主机路径:容器路径[:ro|rw]`。管理任务通过
 nohup 后台执行，因此不会加入只能在交互终端使用的 `-it`。
 
-如果八台机器上已经提前创建好同名容器，使用：
+如果所有配置机器上已经提前创建好同名容器，使用：
 
 ```yaml
 container_mode: existing
@@ -169,7 +182,7 @@ container_repo_path: /kos_ulan/lzs/spec_train/speculators
 保留；再次创建前需要人工确认并删除旧容器，或者切换到 `existing` 模式。
 
 在 `existing` 模式下，manager 的 `stop` 会先按照 PID 文件优雅停止本集群
-记录的 verifier、trainer 和 smoke 任务，然后在八台机器上分别对复用容器
+记录的 verifier、trainer 和 smoke 任务，然后在所有配置机器上分别对复用容器
 执行一次 `docker restart -t 30`。容器不会被删除，但其中残留的 NPU worker
 和进程内状态会被清理。因此不要让与本训练无关的服务共用这些容器。
 manager 会先向任务 PID 发送 SIGTERM，但默认只等待 15 秒，因为紧随其后的
@@ -187,13 +200,13 @@ manager 会先向任务 PID 发送 SIGTERM，但默认只等待 15 秒，因为�
 - verifier、trainer 和 smoke 均不执行 pip install。启动脚本把
   `/kos_ulan/lzs/spec_train/speculators/src` 和
   `/kos_ulan/lzs/spec_train/speculators/hs_connectors/src` 加入
-  `PYTHONPATH`；trainer 随后直接进入四机 64-rank `torchrun`。
+  `PYTHONPATH`；trainer 随后直接进入两机 32-rank 或四机 64-rank `torchrun`。
 
 这是必需的兼容策略：镜像内 vLLM 0.23 要求 `setuptools<81`，而仓库的
 editable build isolation 要求 `setuptools>=82`。不要为了 editable 安装升级
 容器内 setuptools。只有自定义镜像已解决该版本约束时，才可以显式打开
 `install_speculators_trainer`。
-- 八台机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
+- 所有配置机器统一使用 YAML 中的同一个 vLLM-Ascend 镜像。
 
 trainer 首次加载 verifier 的 embedding/head 时，会使用每台容器本地的
 `/tmp/speculators-glm52-verifier-weights.lock` 将16个rank串行化。第一个rank
@@ -235,7 +248,7 @@ CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" preflight --config "$CONFIG"
 ```
 
-预检会在八台机器上检查模型配置、tokenizer、数据集、共享缓存路径、NPU
+预检会在所有配置机器上检查模型配置、tokenizer、数据集、共享缓存路径、NPU
 数量以及关键 Python/vLLM 环境。任意节点失败时不要启动正式训练。
 
 ## 4. 启动 verifier
@@ -287,7 +300,7 @@ bash "$MANAGER" status
 ```
 
 smoke 使用 64 条样本、训练两步，并删除临时生成的 hidden states，不会污染
-正式缓存。必须确认四台 trainer 的 smoke 容器都正常退出，且日志中没有：
+正式缓存。必须确认所有 trainer 的 smoke 容器都正常退出，且日志中没有：
 
 ```text
 Traceback
@@ -343,7 +356,7 @@ bash "$MANAGER" offline
 - 不生成新的 hidden states；
 - 遇到缓存缺失立即失败。
 
-确认四台 trainer 都能稳定读取 batch 后，才可以停止 verifier。
+确认所有 trainer 都能稳定读取 batch 后，才可以停止 verifier。
 
 在线和离线阶段之间不得修改：
 
@@ -388,7 +401,7 @@ bash "$MANAGER" stop-dashboard --config "$CONFIG"
 `dashboard_host` 设为 `127.0.0.1` 并通过 SSH 隧道访问，或用防火墙保护 6007
 端口。集群 `stop` 不会停止看板，以便故障后继续查看最终日志。
 
-查看八台机器相关容器和最近日志：
+查看所有配置机器相关容器和最近日志：
 
 ```bash
 bash "$MANAGER" status
@@ -463,7 +476,7 @@ CP=8 时，1024-token prompt 只会写出 128 行 hidden states，但 token_ids 
 
 恢复规则：
 
-- 四台 trainer 应一起停止、一起恢复；
+- 所有 trainer 应一起停止、一起恢复；
 - 正常恢复使用最新数字 checkpoint；
 - 不要未经检查就把 `interrupted` 目录当作完整 checkpoint；
 - 任何训练或 verifier 仍在运行时，不要删除共享缓存；

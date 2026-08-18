@@ -3,7 +3,7 @@
 
 The parser intentionally supports only the small, dependency-free YAML subset
 used by the checked-in template: top-level scalars and top-level string lists.
-This keeps cluster bootstrap independent of PyYAML on all eight hosts.
+This keeps cluster bootstrap independent of PyYAML on every cluster host.
 """
 
 from __future__ import annotations
@@ -131,12 +131,29 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError(f"unknown YAML keys: {unknown}")
     if config.get("version") != "1":
         raise ValueError("version must be 1")
-    for key in ("verifier_ips", "trainer_ips"):
-        values = config.get(key)
-        if not isinstance(values, list) or len(values) != 4 or not all(values):
-            raise ValueError(f"{key} must contain exactly four non-empty addresses")
-    all_ips = [*config["verifier_ips"], *config["trainer_ips"]]  # type: ignore[misc]
-    if len(set(all_ips)) != 8:
+    verifier_ips = config.get("verifier_ips")
+    if (
+        not isinstance(verifier_ips, list)
+        or len(verifier_ips) != 4
+        or not all(verifier_ips)
+    ):
+        raise ValueError(
+            "verifier_ips must contain exactly four non-empty addresses"
+        )
+    trainer_ips = config.get("trainer_ips")
+    if (
+        not isinstance(trainer_ips, list)
+        or len(trainer_ips) not in {2, 4}
+        or not all(trainer_ips)
+    ):
+        raise ValueError(
+            "trainer_ips must contain exactly two or four non-empty addresses"
+        )
+    all_ips = [  # type: ignore[misc]
+        *config["verifier_ips"],
+        *config["trainer_ips"],
+    ]
+    if len(set(all_ips)) != len(all_ips):
         raise ValueError("all verifier and trainer addresses must be unique")
     required_scalars = (
         "container_image",

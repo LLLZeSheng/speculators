@@ -262,14 +262,23 @@ class ClusterMonitor:
         failed = sum(node["state"] == "failed" for node in [*verifiers, *trainers])
         healthy_verifiers = sum(node["state"] == "healthy" for node in verifiers)
         active_trainers = sum(node["state"] in {"running", "saving"} for node in trainers)
-        overall = "failed" if failed else "running" if active_trainers else "ready" if healthy_verifiers == 4 else "starting"
+        if failed:
+            overall = "failed"
+        elif active_trainers:
+            overall = "running"
+        elif healthy_verifiers == len(verifiers):
+            overall = "ready"
+        else:
+            overall = "starting"
         return {
             "generated_at": time.time(),
             "cluster_name": str(self.config.get("cluster_name", self.prefix)),
             "overall": overall,
             "summary": {
                 "healthy_verifiers": healthy_verifiers,
+                "total_verifiers": len(verifiers),
                 "active_trainers": active_trainers,
+                "total_trainers": len(trainers),
                 "failed_nodes": failed,
                 "total_prompt_tps": round(sum(node["prompt_tps"] or 0 for node in verifiers), 2),
                 "total_generation_tps": round(sum(node["generation_tps"] or 0 for node in verifiers), 2),
@@ -297,7 +306,7 @@ const fmtAge=s=>s==null?'—':s<60?s+' 秒':s<3600?Math.floor(s/60)+' 分':Math.
 const fact=(k,v)=>`<div class="fact"><span>${esc(k)}</span>${esc(v)}</div>`;
 function nodeCard(n){let progress=n.kind==='trainer'&&n.epoch_total?Math.min(100,100*(n.epoch_current||0)/n.epoch_total):(n.kv_cache_percent||0);let facts=n.kind==='verifier'?[fact('Prompt TPS',n.prompt_tps),fact('Generation TPS',n.generation_tps),fact('请求 Running / Waiting',`${n.running_requests??'—'} / ${n.waiting_requests??'—'}`),fact('KV Cache',n.kv_cache_percent==null?'—':n.kv_cache_percent+'%'),fact('尾部成功请求',n.successful_requests_in_tail),fact('HS 分片修复',n.hidden_state_repairs_in_tail)]:[fact('角色',n.role),fact('Epoch',n.epoch_total?`${n.epoch_current??0} / ${n.epoch_total}`:'—'),fact('Step',n.step_total?`${n.step_current??0} / ${n.step_total}`:(n.step_current??'—')),fact('Loss',n.loss??'—'),fact('日志距今',fmtAge(n.log.age_seconds)),fact('警告 / 错误',`${n.recent_warnings} / ${n.recent_errors}`)];return `<article class="node"><div class="node-head"><div><div class="name">${n.kind==='verifier'?'Verifier':'Trainer'} ${n.index}</div><div class="muted">${esc(n.ip)}</div></div><div class="state ${esc(n.state)}">${esc(n.phase)}</div></div><div class="kv"><i style="width:${progress}%"></i></div><div class="facts">${facts.join('')}</div>${n.latest_error?`<div class="err">${esc(n.latest_error)}</div>`:''}<div class="tail">${esc((n.tail||[]).join('\n'))}</div></article>`}
 function metric(k,v){return `<div class="metric"><span class="muted">${esc(k)}</span><b>${esc(v)}</b></div>`}
-async function refresh(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();document.title=d.cluster_name+' · MTP';document.getElementById('title').textContent=d.cluster_name;document.getElementById('stamp').textContent='更新时间 '+new Date(d.generated_at*1000).toLocaleString();document.getElementById('overall').textContent=d.overall;let dot=document.getElementById('dot');dot.style.background=d.overall==='failed'?'var(--bad)':d.overall==='running'||d.overall==='ready'?'var(--ok)':'var(--warn)';document.getElementById('summary').innerHTML=[metric('健康 Verifier',d.summary.healthy_verifiers+' / 4'),metric('活跃 Trainer',d.summary.active_trainers+' / 4'),metric('异常节点',d.summary.failed_nodes),metric('Prompt TPS',d.summary.total_prompt_tps),metric('Generation TPS',d.summary.total_generation_tps)].join('');document.getElementById('verifiers').innerHTML=d.verifiers.map(nodeCard).join('');document.getElementById('trainers').innerHTML=d.trainers.map(nodeCard).join('');document.getElementById('config').textContent=d.config_path}catch(e){document.getElementById('stamp').textContent='刷新失败: '+e}}refresh();setInterval(refresh,5000);
+async function refresh(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();document.title=d.cluster_name+' · MTP';document.getElementById('title').textContent=d.cluster_name;document.getElementById('stamp').textContent='更新时间 '+new Date(d.generated_at*1000).toLocaleString();document.getElementById('overall').textContent=d.overall;let dot=document.getElementById('dot');dot.style.background=d.overall==='failed'?'var(--bad)':d.overall==='running'||d.overall==='ready'?'var(--ok)':'var(--warn)';document.getElementById('summary').innerHTML=[metric('健康 Verifier',d.summary.healthy_verifiers+' / '+d.summary.total_verifiers),metric('活跃 Trainer',d.summary.active_trainers+' / '+d.summary.total_trainers),metric('异常节点',d.summary.failed_nodes),metric('Prompt TPS',d.summary.total_prompt_tps),metric('Generation TPS',d.summary.total_generation_tps)].join('');document.getElementById('verifiers').innerHTML=d.verifiers.map(nodeCard).join('');document.getElementById('trainers').innerHTML=d.trainers.map(nodeCard).join('');document.getElementById('config').textContent=d.config_path}catch(e){document.getElementById('stamp').textContent='刷新失败: '+e}}refresh();setInterval(refresh,5000);
 </script></body></html>'''
 
 

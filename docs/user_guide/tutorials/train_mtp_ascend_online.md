@@ -1,8 +1,8 @@
-# Train GLM-5.2 MTP3 Online on Eight Ascend 910C Nodes
+# Train GLM-5.2 MTP3 Online on Ascend 910C Nodes
 
-This is the production runbook for four 16-NPU verifier nodes plus four
-16-NPU trainer nodes. Trainer `i` uses verifier `i`; the trainers form one
-64-rank FSDP job.
+This runbook supports four 16-NPU verifier nodes plus either four trainer nodes
+(64-rank FSDP) or two trainer nodes (32-rank FSDP). Existing 4V4T behavior is
+unchanged.
 
 The intended data lifecycle is:
 
@@ -22,7 +22,7 @@ For the Chinese version, see
 ## 1. Fixed environment and model contract
 
 - image: `quay.io/ascend/vllm-ascend:v0.23.0rc1-a3`
-- shared filesystem: `/kos_ulan` on all eight nodes
+- shared filesystem: `/kos_ulan` on every configured node
 - checkout: `/kos_ulan/lzs/spec_train/speculators`
 - prepared verifier:
   `/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4`
@@ -58,13 +58,25 @@ cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
 vim /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
+For 4 verifiers + 2 trainers, copy the additive template instead:
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_4v2t.example.yaml \
+  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v2t.yaml
+```
+
+No other switch is needed. The manager sets `NNODES=2`; local ranks on trainer
+0 alternate between verifiers 0 and 2, while trainer 1 uses verifiers 1 and 3.
+All four verifier nodes therefore remain active. With 4V4T, trainer `i` still
+uses verifier `i`.
+
 The shared configuration is:
 
 ```text
 /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-It explicitly contains the four verifier IPs, four trainer IPs, image,
+It explicitly contains four verifier IPs, two or four trainer IPs, image,
 container mode, container mounts, repository, model/data/output paths,
 32K sizing, and per-role installation policy. Replace every `FILL_*` value.
 
@@ -199,7 +211,7 @@ count, and the estimated BF16 hidden-state cache size for one 6144-wide layer.
 
 ### Review the user-maintained YAML
 
-Fill all eight IPs, `nic_name`, `mtp_init_model_path`, `data_path`, and a
+Fill all configured IPs, `nic_name`, `mtp_init_model_path`, `data_path`, and a
 unique `smoke_run_id`. Verify these critical YAML values:
 
 ```yaml
@@ -296,14 +308,14 @@ nohup bash examples/train/run_mtp_glm52_ascend_online_container.sh \
   > /kos_ulan/spec_train/logs/smoke-container-$(hostname).log 2>&1 &
 ```
 
-All 64 trainer ranks must exit successfully. Use a new `SMOKE_RUN_ID` for a
+All 32 or 64 trainer ranks must exit successfully. Use a new `SMOKE_RUN_ID` for a
 repeat.
 
 ## 4. Production: online-cache first epoch, cache hits thereafter
 
 Set `TRAINER_MODE=trainer`, keep `TRAINER_DATA_MODE=online-cache`, and keep the
 final total `EPOCHS` value (for example 5) from the beginning. Start on all
-four trainer nodes within the HCCL rendezvous timeout:
+configured trainer nodes within the HCCL rendezvous timeout:
 
 ```bash
 cd /kos_ulan/lzs/spec_train/speculators
@@ -475,7 +487,7 @@ not an online-training requirement. See
 
 ## 8. Recovery rules
 
-- Stop or restart all four trainer nodes together.
+- Stop or restart all configured trainer nodes together.
 - A normal restart resumes the latest numbered checkpoint.
 - Do not treat an `interrupted` directory as a completed epoch checkpoint
   without inspection.

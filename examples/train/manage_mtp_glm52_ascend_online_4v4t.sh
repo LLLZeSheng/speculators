@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate and operate a user-configured 4-verifier + 4-trainer MTP cluster.
+# Validate and operate a user-configured 4-verifier + 2/4-trainer MTP cluster.
 
 set -euo pipefail
 
@@ -19,10 +19,10 @@ Usage:
 
 Commands:
   validate-config  Validate the user-maintained YAML without opening SSH.
-  preflight        Run non-training validation on all eight nodes.
+  preflight        Run non-training validation on every configured node.
   start-verifiers  Start four verifier containers in the background.
   wait-verifiers   Wait until all verifier health endpoints return HTTP 200.
-  smoke            Start the two-step smoke job on four trainer nodes.
+  smoke            Start the two-step smoke job on all trainer nodes.
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
   status           Show matching containers and recent host-wrapper logs.
@@ -46,7 +46,7 @@ Runtime environment overrides:
   DASHBOARD_PYTHON=python3
   MANAGER_DRY_RUN=1  # print remote SSH commands without executing them
 
-Copy and edit examples/train/mtp_glm52_ascend_online_4v4t.example.yaml; this
+Copy and edit the 4v4t or 4v2t example YAML; this
 manager never generates or rewrites the YAML. It deliberately does not store
 passwords; configure SSH keys first.
 EOF
@@ -97,7 +97,9 @@ load_config() {
     declare -p CLUSTER_TRAINER_IPS >/dev/null 2>&1 || \
         fail "CLUSTER_TRAINER_IPS is missing"
     ((${#CLUSTER_VERIFIER_IPS[@]} == 4)) || fail "expected four verifier IPs"
-    ((${#CLUSTER_TRAINER_IPS[@]} == 4)) || fail "expected four trainer IPs"
+    local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    ((trainer_count == 2 || trainer_count == 4)) || \
+        fail "expected two or four trainer IPs"
     CONTAINER_NAME_PREFIX=${CONTAINER_NAME_PREFIX:-$DEFAULT_CONTAINER_PREFIX}
     REMOTE_REPO_PATH=${REMOTE_REPO_PATH:-$DEFAULT_REPO}
     SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
@@ -109,6 +111,20 @@ load_config() {
     DASHBOARD_AUTO_START=${DASHBOARD_AUTO_START:-1}
     DASHBOARD_LOG_FILE=${DASHBOARD_LOG_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.log}
     DASHBOARD_PID_FILE=${DASHBOARD_PID_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.pid}
+}
+
+verifier_hosts_for_trainer() {
+    local trainer_index=$1
+    local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    local verifier_index
+    local -a selected=()
+    for verifier_index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+        if ((verifier_index % trainer_count == trainer_index)); then
+            selected+=("${CLUSTER_VERIFIER_IPS[$verifier_index]}")
+        fi
+    done
+    local IFS=,
+    printf '%s' "${selected[*]}"
 }
 
 container_for() {
@@ -155,7 +171,7 @@ start_node() {
     local host=$1 role=$2 index=$3 mode=${4:-}
     local container
     container=$(container_for "$role" "$index")
-    local verifier_host=${CLUSTER_VERIFIER_IPS[$index]:-}
+    local verifier_hosts verifier_host
     local host_log="$ORCHESTRATOR_LOG_ROOT/$CONTAINER_NAME_PREFIX-$role$index.host.log"
     local -a command=(
         env
@@ -168,11 +184,14 @@ start_node() {
     case "$role" in
         verifier) command+=("VERIFIER_ID=$index") ;;
         smoke | trainer)
+            verifier_hosts=$(verifier_hosts_for_trainer "$index")
+            verifier_host=${verifier_hosts%%,*}
             command+=(
                 "NODE_RANK=$index"
-                NNODES=4
+                "NNODES=${#CLUSTER_TRAINER_IPS[@]}"
                 "MASTER_ADDR=${CLUSTER_TRAINER_IPS[0]}"
                 "VERIFIER_HOST=$verifier_host"
+                "VERIFIER_HOSTS=$verifier_hosts"
             )
             [[ -n $mode ]] && command+=("TRAINER_DATA_MODE=$mode")
             ;;

@@ -113,6 +113,22 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--hidden-states-dtype bfloat16" in result.stdout
     assert "--fsdp-shard" in result.stdout
     assert "--on-missing generate" in result.stdout
+
+
+def test_trainer_accepts_two_verifier_endpoints_for_local_rank_fanout():
+    result = _run(
+        "trainer",
+        NNODES="2",
+        NODE_RANK="1",
+        VERIFIER_HOSTS="10.0.0.11,10.0.0.13",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--nnodes 2" in result.stdout
+    assert "--node-rank 1" in result.stdout
+    assert "--vllm-endpoint" in result.stdout
+    assert "http://10.0.0.11:8077/v1" in result.stdout
+    assert "http://10.0.0.13:8077/v1" in result.stdout
     assert "--on-generate cache" in result.stdout
     assert "--force-generate" not in result.stdout
     assert "--on-generation-error raise" in result.stdout
@@ -252,6 +268,31 @@ def test_shared_config_auto_maps_trainer_to_matching_verifier(tmp_path):
     assert "MASTER_ADDR=10.0.0.20" in result.stdout
     assert "VERIFIER_HOST=10.0.0.12" in result.stdout
     assert "LOCAL_IP=10.0.0.22" in result.stdout
+
+
+def test_shared_config_auto_maps_two_trainers_across_four_verifiers(tmp_path):
+    config = tmp_path / "cluster-4v2t.env"
+    config.write_text(
+        "\n".join(
+            [
+                'CLUSTER_VERIFIER_IPS=("10.0.0.10" "10.0.0.11" "10.0.0.12" "10.0.0.13")',
+                'CLUSTER_TRAINER_IPS=("10.0.0.20" "10.0.0.21")',
+                "NIC_NAME=eth0",
+                "SMOKE_RUN_ID=unit-test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = _run_container(
+        CONFIG_FILE=str(config), NODE_IP="10.0.0.21", TRAINER_MODE="trainer"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NODE_RANK=1" in result.stdout
+    assert "NNODES=2" in result.stdout
+    assert "VERIFIER_HOST=10.0.0.11" in result.stdout
+    assert "VERIFIER_HOSTS=10.0.0.11" in result.stdout
+    assert "10.0.0.13" in result.stdout
 
 
 def test_shared_config_auto_maps_verifier_and_id(tmp_path):

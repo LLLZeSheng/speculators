@@ -1,8 +1,7 @@
-# User-maintained source of truth for four verifier and four trainer hosts.
+# User-maintained source of truth for four verifier and two trainer hosts.
 # The manager validates and reads this file; it never generates or rewrites it.
-# For two trainer hosts, use mtp_glm52_ascend_online_4v2t.example.yaml instead.
 version: 1
-cluster_name: glm52-online-mtp3
+cluster_name: glm52-online-mtp3-4v2t
 
 verifier_ips:
   - FILL_VERIFIER_0_IP
@@ -12,8 +11,6 @@ verifier_ips:
 trainer_ips:
   - FILL_TRAINER_0_IP
   - FILL_TRAINER_1_IP
-  - FILL_TRAINER_2_IP
-  - FILL_TRAINER_3_IP
 
 container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
 container_mode: create
@@ -42,8 +39,6 @@ hidden_states_path: /kos_ulan/lzs/spec_train/hidden_states/glm52-w4a8-mg13-onlin
 output_path: /kos_ulan/lzs/spec_train/ckpts/glm52-w4a8-mg13
 log_root: /kos_ulan/lzs/spec_train/logs/glm52-w4a8-mg13
 
-# Read-only dashboard running on the control node. It reads shared logs and
-# probes verifier /health endpoints; no package is installed in the containers.
 dashboard_host: 0.0.0.0
 dashboard_port: 6007
 dashboard_auto_start: true

@@ -8,6 +8,7 @@ MANAGER = REPO_ROOT / "examples/train/manage_mtp_glm52_ascend_online_4v4t.sh"
 WRAPPER = REPO_ROOT / "examples/train/run_mtp_glm52_ascend_online_container.sh"
 LAUNCHER = REPO_ROOT / "examples/train/mtp_glm52_ascend_online.sh"
 TEMPLATE = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t.example.yaml"
+TEMPLATE_4V2T = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v2t.example.yaml"
 
 
 def _write_user_yaml(path: Path) -> None:
@@ -23,6 +24,23 @@ def _write_user_yaml(path: Path) -> None:
         "FILL_TRAINER_3_IP": "10.0.1.4",
         "FILL_UNIQUE_SMOKE_ID": "unit-test",
         "glm52-w4a8-mg13-speculator-training": "test-mtp",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_4v2t_yaml(path: Path) -> None:
+    text = TEMPLATE_4V2T.read_text(encoding="utf-8")
+    replacements = {
+        "FILL_VERIFIER_0_IP": "10.0.0.1",
+        "FILL_VERIFIER_1_IP": "10.0.0.2",
+        "FILL_VERIFIER_2_IP": "10.0.0.3",
+        "FILL_VERIFIER_3_IP": "10.0.0.4",
+        "FILL_TRAINER_0_IP": "10.0.1.1",
+        "FILL_TRAINER_1_IP": "10.0.1.2",
+        "FILL_UNIQUE_SMOKE_ID": "unit-test-4v2t",
+        "glm52-w4a8-mg13-speculator-training": "test-mtp-4v2t",
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
@@ -131,6 +149,35 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
         env=environment,
     )
     assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
+
+
+def test_manager_supports_four_verifiers_and_two_trainers(tmp_path: Path):
+    config = tmp_path / "cluster-4v2t.yaml"
+    _write_4v2t_yaml(config)
+
+    validate = subprocess.run(
+        ["bash", str(MANAGER), "validate-config", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "CONFIG_STATUS=valid" in validate.stdout
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "train", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MANAGER_DRY_RUN": "1"},
+    )
+    assert result.stdout.count("[ssh]") == 2
+    assert "NNODES=2" in result.stdout
+    assert "NODE_RANK=0" in result.stdout
+    assert "NODE_RANK=1" in result.stdout
+    assert "VERIFIER_HOSTS=10.0.0.1" in result.stdout
+    assert "10.0.0.3" in result.stdout
+    assert "VERIFIER_HOSTS=10.0.0.2" in result.stdout
+    assert "10.0.0.4" in result.stdout
 
 
 def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):

@@ -283,7 +283,8 @@ class GenerationArgs(_Group):
     )
     vllm_endpoint: str = Field(
         default="http://localhost:8000/v1",
-        description="vLLM endpoint used to generate hidden states on demand. Only "
+        description="vLLM endpoint used to generate hidden states on demand. A "
+        "comma-separated list distributes local ranks across those endpoints. Only "
         "needed if --on-missing=generate and samples are missing. The vLLM instance "
         "must cache hidden states to a location reachable from the training instance.",
     )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-side wrapper for the eight-node Ascend 910C / Atlas A3 online MTP3 job.
+# Host-side wrapper for the 4-verifier + 2/4-trainer Ascend online MTP3 job.
 
 set -euo pipefail
 
@@ -60,6 +60,20 @@ array_is_declared() {
     declare -p "$1" &>/dev/null
 }
 
+verifier_hosts_for_trainer() {
+    local trainer_index=$1
+    local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    local verifier_index
+    local -a selected=()
+    for verifier_index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+        if ((verifier_index % trainer_count == trainer_index)); then
+            selected+=("${CLUSTER_VERIFIER_IPS[$verifier_index]}")
+        fi
+    done
+    local IFS=,
+    printf '%s' "${selected[*]}"
+}
+
 resolve_cluster_role() {
     if [[ -n $ROLE ]]; then
         return 0
@@ -70,8 +84,9 @@ resolve_cluster_role() {
         fail "ROLE is unset and CLUSTER_TRAINER_IPS is not declared"
     ((${#CLUSTER_VERIFIER_IPS[@]} == 4)) || \
         fail "CLUSTER_VERIFIER_IPS must contain exactly four addresses"
-    ((${#CLUSTER_TRAINER_IPS[@]} == 4)) || \
-        fail "CLUSTER_TRAINER_IPS must contain exactly four addresses"
+    local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    ((trainer_count == 2 || trainer_count == 4)) || \
+        fail "CLUSTER_TRAINER_IPS must contain exactly two or four addresses"
     case "$TRAINER_MODE" in
         smoke | trainer) ;;
         *) fail "TRAINER_MODE must be smoke or trainer" ;;
@@ -93,15 +108,16 @@ resolve_cluster_role() {
         if [[ $candidates == *" $address "* ]]; then
             ROLE=$TRAINER_MODE
             NODE_RANK=$index
-            NNODES=4
+            NNODES=$trainer_count
             MASTER_ADDR=${CLUSTER_TRAINER_IPS[0]}
-            VERIFIER_HOST=${CLUSTER_VERIFIER_IPS[$index]}
+            VERIFIER_HOSTS=$(verifier_hosts_for_trainer "$index")
+            VERIFIER_HOST=${VERIFIER_HOSTS%%,*}
             LOCAL_IP=$address
             matches=$((matches + 1))
         fi
     done
     ((matches == 1)) || \
-        fail "could not uniquely map local addresses${NODE_IP:+ (NODE_IP=$NODE_IP)} to the configured 4+4 cluster"
+        fail "could not uniquely map local addresses${NODE_IP:+ (NODE_IP=$NODE_IP)} to the configured 4-verifier + 2/4-trainer cluster"
 }
 
 resolve_cluster_role
@@ -194,7 +210,7 @@ forward_vars=(
     HIDDEN_STATES_PATH MTP_DRAFT_PATH OUTPUT_PATH LOG_ROOT VERIFIER_METADATA_PATH
     VERIFIER_RUNTIME_ROOT VERIFIER_QUANTIZATION_MODE CONTAINER_REPO_PATH
     CONTAINER_NAME INSTALL_SPECULATORS
-    SERVED_MODEL_NAME VERIFIER_HOST VERIFIER_ID VERIFIER_BIND_HOST VERIFIER_PORT
+    SERVED_MODEL_NAME VERIFIER_HOST VERIFIER_HOSTS VERIFIER_ID VERIFIER_BIND_HOST VERIFIER_PORT
     VERIFIER_TP_SIZE VERIFIER_DP_SIZE VERIFIER_MAX_MODEL_LEN
     VERIFIER_MAX_NUM_SEQS VERIFIER_MAX_BATCHED_TOKENS
     VERIFIER_GPU_MEMORY_UTILIZATION TARGET_LAYER_ID NNODES NPROC_PER_NODE

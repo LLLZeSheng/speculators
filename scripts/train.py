@@ -1,6 +1,7 @@
 import argparse
 import gc
 import logging
+import os
 import random
 import warnings
 from copy import deepcopy
@@ -55,6 +56,29 @@ def resolve_generation_model_name(
 ) -> str:
     """Resolve the model ID expected from the online hidden-state service."""
     return generation_model_name_or_path or verifier_name_or_path
+
+
+def resolve_rank_vllm_endpoint(endpoint: str) -> str:
+    """Select one endpoint per local rank from a comma-separated endpoint list.
+
+    A single endpoint is returned unchanged, preserving all existing launchers.
+    Multiple endpoints let a trainer host spread its local workers over multiple
+    verifier hosts without changing the dataset or distributed training layout.
+    """
+    endpoints = [item.strip() for item in endpoint.split(",") if item.strip()]
+    if not endpoints:
+        raise ValueError("vllm_endpoint must contain at least one endpoint")
+    if len(endpoints) == 1:
+        return endpoints[0]
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    selected = endpoints[local_rank % len(endpoints)]
+    logger.info(
+        "Selected verifier endpoint %s for LOCAL_RANK=%d from %d endpoints",
+        selected,
+        local_rank,
+        len(endpoints),
+    )
+    return selected
 
 
 def set_seed(seed: int, deterministic: bool = False):
@@ -559,6 +583,7 @@ def main(cfg: TrainConfig):  # noqa: C901
 
     # Setup distributed training
     maybe_setup_distributed()
+    args.vllm_endpoint = resolve_rank_vllm_endpoint(args.vllm_endpoint)
 
     if args.fsdp_shard and not is_distributed():
         raise ValueError(
