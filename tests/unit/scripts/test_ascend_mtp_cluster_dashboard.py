@@ -27,6 +27,27 @@ def test_parse_training_node_reports_progress_and_loss(tmp_path: Path):
     assert node["loss"] == 0.8125
 
 
+def test_parse_training_node_reports_startup_heartbeat(tmp_path: Path):
+    log = tmp_path / "trainer0.log"
+    log.write_text(
+        "No previous training checkpoint found. Starting fresh training run.\n"
+        "TRAIN_STARTUP phase=fsdp_shard status=started rank=0 local_rank=0 "
+        "elapsed_seconds=0.0\n"
+        "TRAIN_STARTUP phase=fsdp_shard status=heartbeat rank=0 local_rank=0 "
+        "elapsed_seconds=90.0\n",
+        encoding="utf-8",
+    )
+
+    node = parse_training_node(0, "10.0.1.1", [("train", log)])
+
+    assert node["state"] == "waiting"
+    assert node["phase"] == "FSDP 参数分片"
+    assert node["startup_phase"] == "fsdp_shard"
+    assert node["startup_status"] == "heartbeat"
+    assert node["startup_elapsed_seconds"] == 90.0
+    assert node["startup_progress"] == 35
+
+
 def test_parse_verifier_node_reports_vllm_metrics(tmp_path: Path):
     host_log = tmp_path / "host.log"
     verifier_log = tmp_path / "verifier.log"

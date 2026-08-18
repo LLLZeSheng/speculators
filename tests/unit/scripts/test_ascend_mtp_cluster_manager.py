@@ -113,6 +113,8 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     assert "dashboard_host: 0.0.0.0" in text
     assert "dashboard_port: 6007" in text
     assert "dashboard_auto_start: true" in text
+    assert "fsdp_skip_initial_broadcast: true" in text
+    assert "startup_heartbeat_seconds: 30" in text
 
     result = subprocess.run(
         ["bash", str(MANAGER), "validate-config", "--config", str(config)],

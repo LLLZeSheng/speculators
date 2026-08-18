@@ -105,6 +105,8 @@ export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT/hs_connectors/src:$REPO_ROOT${PYTHO
 # Serialize the SFS-backed mmap/copy so one rank warms the host page cache
 # instead of leaving every rank blocked in lock_page concurrently.
 export SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK=${SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK:-/tmp/speculators-glm52-verifier-weights.lock}
+export SPECULATORS_STARTUP_HEARTBEAT_SECONDS=${STARTUP_HEARTBEAT_SECONDS:-30}
+FSDP_SKIP_INITIAL_BROADCAST=${FSDP_SKIP_INITIAL_BROADCAST:-1}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -156,6 +158,8 @@ run_logged() {
 }
 
 validate_role() {
+    [[ $FSDP_SKIP_INITIAL_BROADCAST == 0 || $FSDP_SKIP_INITIAL_BROADCAST == 1 ]] || \
+        fail "FSDP_SKIP_INITIAL_BROADCAST must be 0 or 1"
     case "$ROLE" in
         preflight | verifier | trainer) ;;
         smoke) require_value SMOKE_RUN_ID ;;
@@ -548,6 +552,7 @@ run_trainer() {
     local effective_log_root=$LOG_ROOT
     local effective_seq_len=$TOTAL_SEQ_LEN
     local effective_max_steps=$MAX_STEPS
+    local effective_log_freq=10
     local effective_run_name=$RUN_NAME
     if [[ $mode == smoke ]]; then
         # The distributed sampler drops incomplete global batches.  Keep enough
@@ -563,6 +568,7 @@ run_trainer() {
         effective_log_root="${LOG_ROOT}-smoke-${SMOKE_RUN_ID}"
         effective_seq_len=1024
         effective_max_steps=2
+        effective_log_freq=1
         effective_run_name="${RUN_NAME}-smoke-${SMOKE_RUN_ID}"
         if [[ $DRY_RUN != 1 && -e $effective_output ]]; then
             fail "smoke output already exists; choose a fresh SMOKE_RUN_ID: $effective_output"
@@ -629,9 +635,15 @@ run_trainer() {
         --prefetch-factor "$PREFETCH_FACTOR"
         --request-timeout "$REQUEST_TIMEOUT"
         --max-retries "$MAX_RETRIES"
-        --log-freq 10
+        --log-freq "$effective_log_freq"
         --fsdp-shard
     )
+    # Every rank loads the same prepared MTP_DRAFT_PATH. FSDP can shard those
+    # identical local tensors directly without broadcasting the full state dict
+    # from rank 0 a second time. Set the YAML option false for diagnosis.
+    if [[ $FSDP_SKIP_INITIAL_BROADCAST == 1 ]]; then
+        cmd+=(--fsdp-skip-initial-broadcast)
+    fi
     if [[ -n $effective_max_steps ]]; then
         cmd+=(--max-steps "$effective_max_steps")
     fi

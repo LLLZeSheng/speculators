@@ -112,6 +112,7 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--num-speculative-steps 3" in result.stdout
     assert "--hidden-states-dtype bfloat16" in result.stdout
     assert "--fsdp-shard" in result.stdout
+    assert "--fsdp-skip-initial-broadcast" in result.stdout
     assert "--on-missing generate" in result.stdout
 
 

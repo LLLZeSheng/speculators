@@ -46,6 +46,8 @@ SCALAR_MAP = {
     "request_timeout": "REQUEST_TIMEOUT",
     "max_retries": "MAX_RETRIES",
     "epochs": "EPOCHS",
+    "fsdp_skip_initial_broadcast": "FSDP_SKIP_INITIAL_BROADCAST",
+    "startup_heartbeat_seconds": "STARTUP_HEARTBEAT_SECONDS",
     "trainer_mode": "TRAINER_MODE",
     "trainer_data_mode": "TRAINER_DATA_MODE",
     "smoke_run_id": "SMOKE_RUN_ID",
@@ -271,6 +273,17 @@ def validate(config: dict[str, str | list[str]]) -> None:
         if not isinstance(value, str):
             raise ValueError("dashboard_auto_start must be a scalar")
         boolean_as_flag(value, "dashboard_auto_start")
+    if "fsdp_skip_initial_broadcast" in config:
+        value = config["fsdp_skip_initial_broadcast"]
+        if not isinstance(value, str):
+            raise ValueError("fsdp_skip_initial_broadcast must be a scalar")
+        boolean_as_flag(value, "fsdp_skip_initial_broadcast")
+    if "startup_heartbeat_seconds" in config:
+        value = config["startup_heartbeat_seconds"]
+        if not isinstance(value, str) or not value.isdigit():
+            raise ValueError(
+                "startup_heartbeat_seconds must be a non-negative integer"
+            )
     if "dashboard_port" in config:
         value = config["dashboard_port"]
         if (
@@ -289,10 +302,11 @@ def render(config: dict[str, str | list[str]]) -> str:
             continue
         if not isinstance(value, str):
             raise ValueError(f"{yaml_key} must be a scalar")
-        if (
-            yaml_key.startswith("install_speculators_")
-            or yaml_key == "dashboard_auto_start"
-        ):
+        boolean_keys = {
+            "dashboard_auto_start",
+            "fsdp_skip_initial_broadcast",
+        }
+        if yaml_key.startswith("install_speculators_") or yaml_key in boolean_keys:
             value = boolean_as_flag(value, yaml_key)
         # Preserve explicit runtime overrides, matching the former shell config.
         lines.append(f"{shell_key}=${{{shell_key}:-{shlex.quote(value)}}}")

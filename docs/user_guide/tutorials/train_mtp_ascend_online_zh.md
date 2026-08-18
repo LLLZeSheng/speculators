@@ -309,8 +309,10 @@ bash "$MANAGER" smoke
 bash "$MANAGER" status
 ```
 
-smoke 使用 64 条样本、训练两步，并删除临时生成的 hidden states，不会污染
-正式缓存。必须确认所有 trainer 的 smoke 容器都正常退出，且日志中没有：
+smoke 会按训练 world size 自动准备足够样本（64-rank 时至少 256 条）、训练
+两步，并删除临时生成的 hidden states，不会污染正式缓存。smoke 会把
+`log_freq` 自动设为 1，因此两步都会记录 step/loss。必须确认所有 trainer 的
+smoke 容器都正常退出，且日志中没有：
 
 ```text
 Traceback
@@ -350,6 +352,29 @@ epoch 数，例如 5，从而保持连续的 optimizer 和 cosine scheduler 状�
 ...
 /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node3.log
 ```
+
+每个 trainer 节点的 local-rank 0 会在模型初始化阶段每 30 秒记录一次结构化
+心跳，例如：
+
+```text
+TRAIN_STARTUP phase=fsdp_shard status=heartbeat ... elapsed_seconds=90.0
+TRAIN_STARTUP phase=initial_weight_sync status=skipped ...
+TRAIN_STARTUP phase=startup_barrier status=heartbeat ...
+TRAIN_STARTUP phase=optimizer_init status=started ...
+TRAIN_STARTUP phase=first_batch status=heartbeat ...
+```
+
+心跳间隔和 fresh-run 快速路径可在集群 YAML 中配置：
+
+```yaml
+startup_heartbeat_seconds: 30
+fsdp_skip_initial_broadcast: true
+```
+
+GLM-5.2 启动器保证所有 rank 都从同一个完整 `MTP_DRAFT_PATH` 加载权重，因此
+默认跳过 FSDP 分片后的第二次 rank-0 全量 state-dict 广播，只保留最终 barrier。
+这会减少启动时间和 rank 0 峰值内存。恢复已有 checkpoint 时该开关不会跳过
+distributed checkpoint load；若要对比诊断，可临时设置为 `false` 恢复原行为。
 
 ## 7. epoch 1 之后严格离线恢复
 
@@ -395,7 +420,9 @@ dashboard_auto_start: true
 浏览器访问 `http://<控制节点IP>:6007`。页面每 5 秒刷新一次，汇总共享的
 host-wrapper 日志、verifier 详细日志和 `/health` 探测，展示全部 verifier 与
 trainer 的阶段、epoch/step/loss、prompt/generation 吞吐、请求排队、KV cache、
-日志更新时间及最近错误。它只在控制节点运行，不会在八个业务容器里安装任何
+日志更新时间及最近错误。初始化期间还会直接展示 FSDP 分片、权重同步、节点
+barrier、优化器初始化和首个 batch 等待的阶段与耗时。它只在控制节点运行，
+不会在八个业务容器里安装任何
 依赖；对 `7.x` 内网 verifier 的健康探测会明确绕过 `HTTP_PROXY/HTTPS_PROXY`。
 
 手动管理命令：

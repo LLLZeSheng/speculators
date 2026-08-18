@@ -1,7 +1,10 @@
 import json
 import logging
+import os
+import threading
 import time
 import warnings
+from itertools import chain
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -130,7 +133,86 @@ class TrainerConfig(NamedTuple):
     hidden_states_dtype: torch.dtype = torch.bfloat16
     log_freq: int = 1
     fsdp_shard: bool = False
+    fsdp_skip_initial_broadcast: bool = False
     max_steps: int | None = None
+
+
+def _startup_heartbeat_seconds() -> float:
+    raw = os.environ.get("SPECULATORS_STARTUP_HEARTBEAT_SECONDS", "30")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        root_logger.warning(
+            "Invalid SPECULATORS_STARTUP_HEARTBEAT_SECONDS=%r; using 30 seconds",
+            raw,
+        )
+        return 30.0
+
+
+def _log_startup_event(
+    phase: str, status: str, *, started: float, detail: str | None = None
+) -> None:
+    """Emit a machine-readable startup event once per trainer host."""
+    if get_local_rank() != 0:
+        return
+    elapsed = time.monotonic() - started
+    suffix = f" detail={detail}" if detail else ""
+    root_logger.info(
+        "TRAIN_STARTUP phase=%s status=%s rank=%d local_rank=%d "
+        "elapsed_seconds=%.1f%s",
+        phase,
+        status,
+        get_rank(),
+        get_local_rank(),
+        elapsed,
+        suffix,
+        extra={"override_rank0_filter": True},
+    )
+
+
+class _StartupStage:
+    """Log a startup phase and keep its host log alive while it blocks."""
+
+    def __init__(self, phase: str, detail: str | None = None):
+        self.phase = phase
+        self.detail = detail
+        self.started = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        _log_startup_event(
+            self.phase, "started", started=self.started, detail=self.detail
+        )
+        interval = _startup_heartbeat_seconds()
+        if get_local_rank() == 0 and interval > 0:
+
+            def heartbeat() -> None:
+                while not self._stop.wait(interval):
+                    _log_startup_event(
+                        self.phase,
+                        "heartbeat",
+                        started=self.started,
+                        detail=self.detail,
+                    )
+
+            self._thread = threading.Thread(
+                target=heartbeat,
+                name=f"startup-heartbeat-{self.phase}",
+                daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, _exc, _traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        status = "failed" if exc_type is not None else "completed"
+        _log_startup_event(
+            self.phase, status, started=self.started, detail=self.detail
+        )
+        return False
 
 
 def _should_save_periodic_checkpoint(
@@ -219,7 +301,10 @@ class Trainer:
 
         self.setup_trainer()
         self.setup_model()
-        self.setup_optimizer()
+        with _StartupStage("optimizer_init"):
+            self.setup_optimizer()
+        ready_started = time.monotonic()
+        _log_startup_event("ready", "completed", started=ready_started)
 
     def _training_state_path(self, epoch: int) -> Path:
         return self.checkpointer.path / str(epoch) / "training_state.json"
@@ -326,27 +411,46 @@ class Trainer:
             self._setup_model_ddp(load_checkpoint)
 
     def _setup_model_fsdp(self, load_checkpoint: bool):
+        skip_initial_broadcast = (
+            self.config.fsdp_skip_initial_broadcast and not load_checkpoint
+        )
         # Capture full state dict on rank 0 before FSDP sharding
         full_state_dict = {}
-        if not load_checkpoint and dist.get_rank() == 0:
-            full_state_dict = self.model.state_dict()
+        if not load_checkpoint and not skip_initial_broadcast and dist.get_rank() == 0:
+            with _StartupStage("capture_initial_state"):
+                full_state_dict = self.model.state_dict()
 
-        apply_fully_sharded(self.model, param_dtype=self.config.hidden_states_dtype)
+        with _StartupStage("fsdp_shard"):
+            apply_fully_sharded(
+                self.model, param_dtype=self.config.hidden_states_dtype
+            )
 
         if load_checkpoint:
-            self.checkpointer.load_model_state_dict(self.model)
+            with _StartupStage("checkpoint_load"):
+                self.checkpointer.load_model_state_dict(self.model)
+        elif skip_initial_broadcast:
+            started = time.monotonic()
+            _log_startup_event(
+                "initial_weight_sync",
+                "skipped",
+                started=started,
+                detail="identical_pretrained_weights",
+            )
         else:
             # Broadcast full state dict from rank 0 to all ranks
-            set_model_state_dict(
-                self.model,
-                full_state_dict,
-                options=StateDictOptions(
-                    full_state_dict=True,
-                    broadcast_from_rank0=True,
-                    strict=False,
-                ),
-            )
+            with _StartupStage("initial_weight_sync", "rank0_full_state_broadcast"):
+                set_model_state_dict(
+                    self.model,
+                    full_state_dict,
+                    options=StateDictOptions(
+                        full_state_dict=True,
+                        broadcast_from_rank0=True,
+                        strict=False,
+                    ),
+                )
             del full_state_dict
+
+        with _StartupStage("startup_barrier"):
             dist.barrier()
 
     def _setup_model_ddp(self, load_checkpoint: bool):
@@ -467,7 +571,15 @@ class Trainer:
 
         t_before_fetch = time.perf_counter()
         timer = _StepTimer()
-        for local_step_rel, batch in enumerate(train_loader, 1):
+        train_iterator = iter(train_loader)
+        try:
+            with _StartupStage("first_batch", f"epoch_{epoch + 1}"):
+                first_batch = next(train_iterator)
+        except StopIteration:
+            return
+        for local_step_rel, batch in enumerate(
+            chain((first_batch,), train_iterator), 1
+        ):
             # local_step is 1-based index into the *full* epoch (not the slice).
             local_step = local_step_rel + skip_steps
             timer.reset(self.global_step % self.config.log_freq == 0)

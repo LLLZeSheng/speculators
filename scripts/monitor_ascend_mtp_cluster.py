@@ -40,6 +40,20 @@ VERIFIER_METRICS_RE = re.compile(
     r"Running:\s*(\d+) reqs,\s*Waiting:\s*(\d+) reqs,\s*"
     r"GPU KV cache usage:\s*([\d.]+)%"
 )
+TRAIN_STARTUP_RE = re.compile(
+    r"TRAIN_STARTUP phase=(\S+) status=(\S+) rank=(\d+) local_rank=(\d+) "
+    r"elapsed_seconds=([\d.]+)(?: detail=(\S+))?"
+)
+STARTUP_PHASES: dict[str, tuple[str, int]] = {
+    "capture_initial_state": ("准备初始权重", 15),
+    "fsdp_shard": ("FSDP 参数分片", 35),
+    "checkpoint_load": ("加载训练检查点", 55),
+    "initial_weight_sync": ("同步初始权重", 65),
+    "startup_barrier": ("等待训练节点汇合", 80),
+    "optimizer_init": ("初始化优化器", 92),
+    "first_batch": ("等待首个训练批次", 98),
+    "ready": ("训练初始化完成", 100),
+}
 
 
 def read_tail(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
@@ -100,6 +114,24 @@ def classify_training(text: str, age: int | None) -> tuple[str, str]:
         return "complete", "训练完成"
     if "Saving checkpoint to" in text or "Writing model shards:" in text:
         return "saving", "保存检查点"
+    startup = last_match(TRAIN_STARTUP_RE, text)
+    last_epoch = text.rfind("Training epoch")
+    if startup and startup.start() > last_epoch:
+        phase_name, _progress = STARTUP_PHASES.get(
+            startup.group(1), (startup.group(1), 5)
+        )
+        status = startup.group(2)
+        if status == "failed":
+            return "failed", f"{phase_name}失败"
+        if status == "heartbeat":
+            return "waiting", phase_name
+        if startup.group(1) == "first_batch" and status == "started":
+            return "waiting", phase_name
+        if startup.group(1) == "first_batch" and status == "completed":
+            return "running", "训练中"
+        if startup.group(1) == "ready":
+            return "starting", phase_name
+        return "loading", phase_name
     if "Training epoch" in text:
         if age is not None and age > 300:
             return "stale", "训练无新日志"
@@ -130,6 +162,7 @@ def parse_training_node(index: int, ip: str, paths: list[tuple[str, Path]]) -> d
     step_match = last_match(GLOBAL_STEP_RE, text)
     progress_match = last_match(PROGRESS_RE, text)
     loss_match = last_match(LOSS_RE, text)
+    startup_match = last_match(TRAIN_STARTUP_RE, text)
     epoch_current = int(epoch_match.group(1)) if epoch_match else None
     epoch_total = int(epoch_match.group(2)) if epoch_match else None
     if epoch_match and epoch_match.group(3) == "completed":
@@ -139,6 +172,16 @@ def parse_training_node(index: int, ip: str, paths: list[tuple[str, Path]]) -> d
     if progress_match:
         step_current = int(progress_match.group(1))
         step_total = int(progress_match.group(2))
+    startup_phase = startup_match.group(1) if startup_match else None
+    startup_status = startup_match.group(2) if startup_match else None
+    startup_elapsed_seconds = (
+        float(startup_match.group(5)) if startup_match else None
+    )
+    startup_progress = (
+        STARTUP_PHASES.get(startup_phase, (startup_phase, 5))[1]
+        if startup_phase
+        else None
+    )
     return {
         "kind": "trainer",
         "index": index,
@@ -151,6 +194,10 @@ def parse_training_node(index: int, ip: str, paths: list[tuple[str, Path]]) -> d
         "step_current": step_current,
         "step_total": step_total,
         "loss": float(loss_match.group(1)) if loss_match else None,
+        "startup_phase": startup_phase,
+        "startup_status": startup_status,
+        "startup_elapsed_seconds": startup_elapsed_seconds,
+        "startup_progress": startup_progress,
         "recent_errors": len(ERROR_RE.findall(text)),
         "recent_warnings": len(WARNING_RE.findall(text)),
         "latest_error": latest_error(text),
@@ -261,7 +308,10 @@ class ClusterMonitor:
         ]
         failed = sum(node["state"] == "failed" for node in [*verifiers, *trainers])
         healthy_verifiers = sum(node["state"] == "healthy" for node in verifiers)
-        active_trainers = sum(node["state"] in {"running", "saving"} for node in trainers)
+        active_trainers = sum(
+            node["state"] in {"starting", "loading", "waiting", "running", "saving"}
+            for node in trainers
+        )
         if failed:
             overall = "failed"
         elif active_trainers:
@@ -624,6 +674,10 @@ function progressInfo(node) {
     const value = Math.max(0, Math.min(100, node.kv_cache_percent || 0));
     return {label:'KV Cache', value, text:node.kv_cache_percent == null ? '暂无数据' : `${number(node.kv_cache_percent)}%`};
   }
+  if (node.startup_progress != null && ['started', 'heartbeat'].includes(node.startup_status)) {
+    const elapsed = node.startup_elapsed_seconds == null ? '' : ` · ${number(node.startup_elapsed_seconds)}s`;
+    return {label:'训练初始化', value:node.startup_progress, text:`${node.phase}${elapsed}`};
+  }
   if (node.step_total) {
     const value = Math.max(0, Math.min(100, 100 * (node.step_current || 0) / node.step_total));
     return {label:'当前 Epoch 步数', value, text:`${number(node.step_current || 0)} / ${number(node.step_total)}`};
@@ -631,6 +685,10 @@ function progressInfo(node) {
   if (node.epoch_total) {
     const value = Math.max(0, Math.min(100, 100 * (node.epoch_current || 0) / node.epoch_total));
     return {label:'训练 Epoch', value, text:`${number(node.epoch_current || 0)} / ${number(node.epoch_total)}`};
+  }
+  if (node.startup_progress != null) {
+    const elapsed = node.startup_elapsed_seconds == null ? '' : ` · ${number(node.startup_elapsed_seconds)}s`;
+    return {label:'训练初始化', value:node.startup_progress, text:`${node.phase}${elapsed}`};
   }
   return {label:'启动进度', value:node.state === 'complete' ? 100 : 0, text:node.phase};
 }
@@ -645,7 +703,7 @@ function nodeCard(node) {
     fact('成功请求', number(node.successful_requests_in_tail)),
     fact('警告 / 错误', `${number(node.recent_warnings)} / ${number(node.recent_errors)}`)
   ] : [
-    fact('运行角色', node.role || '—'),
+    fact('当前阶段', node.phase || '—'),
     fact('Epoch', node.epoch_total ? `${number(node.epoch_current || 0)} / ${number(node.epoch_total)}` : '—'),
     fact('Global Step', number(node.step_current)),
     fact('Loss', number(node.loss)),

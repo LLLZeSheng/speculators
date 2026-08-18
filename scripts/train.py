@@ -590,6 +590,16 @@ def main(cfg: TrainConfig):  # noqa: C901
             "--fsdp-shard requires launching with torchrun/distributed training; "
             "otherwise parameters are not sharded."
         )
+    if args.fsdp_skip_initial_broadcast:
+        if not args.fsdp_shard:
+            raise ValueError(
+                "--fsdp-skip-initial-broadcast requires --fsdp-shard"
+            )
+        if not args.from_pretrained or is_config_only_dir(args.from_pretrained):
+            raise ValueError(
+                "--fsdp-skip-initial-broadcast requires every rank to load the "
+                "same complete --from-pretrained checkpoint"
+            )
 
     # Install partial-neox rotary patch if not using full-head hack
     if not args.draft_mrope_full_head_hack:
@@ -744,6 +754,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         hidden_states_dtype=hidden_states_dtype,
         log_freq=args.log_freq,
         fsdp_shard=args.fsdp_shard,
+        fsdp_skip_initial_broadcast=args.fsdp_skip_initial_broadcast,
         max_steps=args.max_steps,
     )
     trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)

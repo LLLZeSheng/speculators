@@ -432,6 +432,13 @@ class TrainerArgs(_Group):
         "parameters are fully replicated (DDP-like). Enable when the model does not "
         "fit in a single GPU's memory.",
     )
+    fsdp_skip_initial_broadcast: bool = Field(
+        default=False,
+        description="Skip the fresh-run rank-0 full-state broadcast after FSDP "
+        "sharding. Safe only when every rank loaded the same complete "
+        "--from-pretrained checkpoint. Checkpoint resume still performs its normal "
+        "distributed load.",
+    )
     max_steps: int | None = Field(
         default=None,
         ge=1,

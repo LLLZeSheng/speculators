@@ -125,6 +125,7 @@ def _make_trainer_no_init(
     save_path="/tmp/test_ckpt",
     hidden_states_dtype=torch.bfloat16,
     fsdp_shard=False,
+    fsdp_skip_initial_broadcast=False,
 ):
     """Create a Trainer instance bypassing __init__ to control setup order."""
     if rank is None:
@@ -136,6 +137,7 @@ def _make_trainer_no_init(
         resume_from_checkpoint=resume_from_checkpoint,
         hidden_states_dtype=hidden_states_dtype,
         fsdp_shard=fsdp_shard,
+        fsdp_skip_initial_broadcast=fsdp_skip_initial_broadcast,
     )
     trainer = Trainer.__new__(Trainer)
     trainer.model = model
@@ -459,6 +461,53 @@ def _get_full_state_dict_rank0(model):
 # ===================================================================
 # Distributed — Fresh Init
 # ===================================================================
+
+
+def test_fsdp_identical_pretrained_fast_path_skips_full_state_broadcast(tiny_model):
+    trainer = _make_trainer_no_init(
+        tiny_model,
+        is_distributed=True,
+        fsdp_shard=True,
+        fsdp_skip_initial_broadcast=True,
+    )
+    trainer.checkpointer = MagicMock(previous_epoch=-1)
+
+    with (
+        patch("speculators.train.trainer.apply_fully_sharded") as shard,
+        patch("speculators.train.trainer.set_model_state_dict") as sync_state,
+        patch("speculators.train.trainer.dist.barrier") as barrier,
+        patch("speculators.train.trainer.dist.get_rank", return_value=0),
+        patch.object(tiny_model, "state_dict", wraps=tiny_model.state_dict) as state,
+    ):
+        trainer._setup_model_fsdp(load_checkpoint=False)
+
+    shard.assert_called_once()
+    state.assert_not_called()
+    sync_state.assert_not_called()
+    barrier.assert_called_once()
+
+
+def test_fsdp_fast_path_does_not_skip_checkpoint_resume(tiny_model):
+    trainer = _make_trainer_no_init(
+        tiny_model,
+        is_distributed=True,
+        resume_from_checkpoint=True,
+        fsdp_shard=True,
+        fsdp_skip_initial_broadcast=True,
+    )
+    trainer.checkpointer = MagicMock(previous_epoch=2)
+
+    with (
+        patch("speculators.train.trainer.apply_fully_sharded") as shard,
+        patch("speculators.train.trainer.set_model_state_dict") as sync_state,
+        patch("speculators.train.trainer.dist.barrier") as barrier,
+    ):
+        trainer._setup_model_fsdp(load_checkpoint=True)
+
+    shard.assert_called_once()
+    trainer.checkpointer.load_model_state_dict.assert_called_once_with(tiny_model)
+    sync_state.assert_not_called()
+    barrier.assert_called_once()
 
 
 def _worker_distributed_fresh_init(rank, world_size, results_dir):
