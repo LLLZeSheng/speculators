@@ -19,6 +19,7 @@ class Connector:
                 lock_path = filename + ".lock"
                 lock_fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o644)
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
             future = self._executor.submit(
                 self._write_tensors, tensors, event, filename, lock_fd
             )

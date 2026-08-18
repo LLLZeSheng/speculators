@@ -33,14 +33,13 @@ INIT_ANCHOR = """        self.use_lock = self._kv_transfer_config.get_from_extra
 INIT_REPLACEMENT = INIT_ANCHOR + f"""        # {PATCH_MARKER}
         self._synchronous_write_fallback = False
 """
-LOCK_ANCHOR = """                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            future = self._executor.submit(
-"""
+FLOCK_ANCHOR = "                fcntl.flock(lock_fd, fcntl.LOCK_EX)\n"
+FUTURE_ANCHOR = "            future = self._executor.submit(\n"
 USE_LOCK_ANCHOR = "            if self.use_lock:\n"
 USE_LOCK_REPLACEMENT = (
     "            if self.use_lock and not self._synchronous_write_fallback:\n"
 )
-LOCK_REPLACEMENT = """                try:
+FLOCK_REPLACEMENT = """                try:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 except OSError as error:
                     if error.errno != errno.ENOLCK:
@@ -57,7 +56,8 @@ LOCK_REPLACEMENT = """                try:
                         "falling back to synchronous hidden-state writes.",
                         self._storage_path,
                     )
-            if self._synchronous_write_fallback:
+"""
+FUTURE_REPLACEMENT = """            if self._synchronous_write_fallback:
                 self._write_tensors(tensors, event, filename, None)
                 self._req_copy_events[req_id] = event
                 continue
@@ -118,14 +118,16 @@ def apply(target: Path) -> int:
         ("import", IMPORT_ANCHOR),
         ("initialization", INIT_ANCHOR),
         ("use-lock", USE_LOCK_ANCHOR),
-        ("lock", LOCK_ANCHOR),
+        ("flock", FLOCK_ANCHOR),
+        ("future", FUTURE_ANCHOR),
     ):
         if text.count(anchor) != 1:
             raise RuntimeError(f"unsupported vLLM source: {name} anchor is not unique")
     patched = text.replace(IMPORT_ANCHOR, IMPORT_REPLACEMENT, 1)
     patched = patched.replace(INIT_ANCHOR, INIT_REPLACEMENT, 1)
     patched = patched.replace(USE_LOCK_ANCHOR, USE_LOCK_REPLACEMENT, 1)
-    patched = patched.replace(LOCK_ANCHOR, LOCK_REPLACEMENT, 1)
+    patched = patched.replace(FLOCK_ANCHOR, FLOCK_REPLACEMENT, 1)
+    patched = patched.replace(FUTURE_ANCHOR, FUTURE_REPLACEMENT, 1)
     compile(patched, str(target), "exec")
     backup = backup_path(target)
     if backup.exists():
