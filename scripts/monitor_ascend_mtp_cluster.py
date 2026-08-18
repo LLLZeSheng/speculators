@@ -290,24 +290,445 @@ class ClusterMonitor:
 
 
 HTML = r'''<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ascend MTP Cluster</title><style>
-:root{color-scheme:dark;--bg:#07111f;--panel:#0e1c2f;--line:#203650;--text:#e7f0fb;--muted:#8fa8c2;--ok:#3ddc97;--warn:#ffbd59;--bad:#ff667a;--blue:#5ba8ff}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#123358 0,transparent 36%),var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,sans-serif}
-main{max-width:1500px;margin:auto;padding:26px}.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-end}h1{margin:0;font-size:27px;letter-spacing:.02em}.sub,.muted{color:var(--muted)}
-.badge{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid var(--line);border-radius:999px;background:#0a1728}.dot{width:9px;height:9px;border-radius:50%;background:var(--warn)}
-.summary{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:12px;margin:22px 0}.metric,.node{background:linear-gradient(145deg,#10233a,#0b1829);border:1px solid var(--line);border-radius:14px;box-shadow:0 14px 35px #0004}.metric{padding:16px}.metric b{display:block;font-size:23px;margin-top:5px}.section{margin-top:22px}.section h2{font-size:17px;margin:0 0 11px}.grid{display:grid;grid-template-columns:repeat(4,minmax(245px,1fr));gap:12px}.node{padding:15px;min-width:0}.node-head{display:flex;justify-content:space-between;gap:8px}.name{font-weight:750;font-size:16px}.state{font-size:12px;padding:3px 8px;border-radius:999px;background:#ffffff12}.healthy,.running,.complete{color:var(--ok)}.failed{color:var(--bad)}.stale,.waiting,.saving{color:var(--warn)}.loading,.starting{color:var(--blue)}
-.kv{height:7px;border-radius:5px;background:#071321;overflow:hidden;margin:10px 0}.kv i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#8b77ff)}.facts{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}.fact{padding:8px;background:#071421;border-radius:8px}.fact span{display:block;color:var(--muted);font-size:11px}.err{margin-top:10px;color:#ff9aaa;background:#3b1420;padding:8px;border-radius:8px;word-break:break-word}.tail{margin-top:10px;border-top:1px solid var(--line);padding-top:8px;color:#a8bdd2;font:11px/1.45 ui-monospace,monospace;max-height:92px;overflow:auto;white-space:pre-wrap}.foot{margin:22px 0;color:var(--muted)}
-@media(max-width:1100px){.grid{grid-template-columns:repeat(2,1fr)}.summary{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){main{padding:16px}.top{align-items:flex-start;flex-direction:column}.grid,.summary{grid-template-columns:1fr}}
-</style></head><body><main><div class="top"><div><h1 id="title">Ascend MTP Cluster</h1><div class="sub" id="stamp">正在读取集群日志…</div></div><div class="badge"><i class="dot" id="dot"></i><span id="overall">连接中</span></div></div><div class="summary" id="summary"></div><section class="section"><h2>Verifier / 隐藏状态生成</h2><div class="grid" id="verifiers"></div></section><section class="section"><h2>Trainer / 分布式训练</h2><div class="grid" id="trainers"></div></section><div class="foot">每 5 秒自动刷新 · 只读日志与健康检查 · <span id="config"></span></div></main>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ascend MTP Control Center</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #070b13;
+  --surface: #0d1420;
+  --surface-2: #111b2a;
+  --surface-3: #162234;
+  --line: rgba(148, 163, 184, .14);
+  --line-strong: rgba(148, 163, 184, .24);
+  --text: #f4f7fb;
+  --muted: #8a9aaf;
+  --faint: #5b6b7f;
+  --cyan: #28d7c0;
+  --blue: #5d8dff;
+  --violet: #9b7bff;
+  --green: #45dda0;
+  --amber: #ffbe5c;
+  --red: #ff6b7a;
+  --shadow: 0 20px 70px rgba(0, 0, 0, .28);
+  --radius: 18px;
+}
+* { box-sizing: border-box; }
+html { min-width: 320px; background: var(--bg); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font: 14px/1.5 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  background:
+    radial-gradient(900px 520px at 8% -8%, rgba(41, 120, 255, .16), transparent 65%),
+    radial-gradient(720px 460px at 94% 2%, rgba(40, 215, 192, .09), transparent 64%),
+    var(--bg);
+}
+button { font: inherit; }
+.shell { width: min(1540px, 100%); margin: 0 auto; padding: 24px 28px 42px; }
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 58px;
+  margin-bottom: 22px;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(93, 141, 255, .42);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(93, 141, 255, .22), rgba(40, 215, 192, .08));
+  box-shadow: inset 0 0 24px rgba(93, 141, 255, .12);
+}
+.brand-mark::before, .brand-mark::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 14px rgba(40, 215, 192, .7);
+}
+.brand-mark::before { width: 8px; height: 8px; left: 8px; top: 9px; }
+.brand-mark::after { width: 6px; height: 6px; right: 8px; bottom: 9px; }
+.brand-mark i { position: absolute; inset: 13px 10px; border-top: 1px solid var(--blue); transform: rotate(32deg); }
+.brand-copy strong { display: block; font-size: 14px; letter-spacing: .08em; }
+.brand-copy span { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.nav-actions { display: flex; align-items: center; gap: 9px; }
+.refresh-info { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.control {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: #cbd6e4;
+  background: rgba(17, 27, 42, .78);
+  cursor: pointer;
+  transition: border-color .2s, background .2s, transform .2s;
+}
+.control:hover { border-color: rgba(93, 141, 255, .55); background: var(--surface-3); }
+.control:active { transform: translateY(1px); }
+.hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  min-height: 168px;
+  padding: 30px 32px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: linear-gradient(120deg, rgba(17, 27, 42, .96), rgba(10, 17, 28, .92));
+  box-shadow: var(--shadow);
+}
+.hero::after {
+  content: "";
+  position: absolute;
+  width: 360px;
+  height: 360px;
+  right: -90px;
+  top: -200px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(40, 215, 192, .13), transparent 68%);
+  pointer-events: none;
+}
+.eyebrow { color: var(--cyan); font: 700 11px/1 ui-monospace, monospace; letter-spacing: .16em; text-transform: uppercase; }
+h1 { margin: 12px 0 8px; font-size: clamp(25px, 3vw, 38px); line-height: 1.12; letter-spacing: -.035em; }
+.hero-sub { color: var(--muted); font-size: 13px; }
+.cluster-state {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 210px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: rgba(7, 11, 19, .48);
+  backdrop-filter: blur(10px);
+}
+.pulse { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 5px rgba(255, 190, 92, .1); }
+.cluster-state strong { display: block; font-size: 14px; }
+.cluster-state small { display: block; margin-top: 2px; color: var(--muted); }
+body[data-overall="running"] .pulse, body[data-overall="ready"] .pulse { background: var(--green); box-shadow: 0 0 0 5px rgba(69, 221, 160, .1); }
+body[data-overall="failed"] .pulse { background: var(--red); box-shadow: 0 0 0 5px rgba(255, 107, 122, .1); }
+.metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 14px 0 0; }
+.metric {
+  position: relative;
+  min-width: 0;
+  padding: 17px 18px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(13, 20, 32, .86);
+}
+.metric::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 2px; background: var(--metric-color, var(--blue)); border-radius: 2px; }
+.metric-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.metric-value { display: block; overflow: hidden; margin-top: 8px; font-size: clamp(21px, 2.2vw, 29px); font-weight: 720; line-height: 1; letter-spacing: -.03em; text-overflow: ellipsis; }
+.metric-unit { margin-left: 4px; color: var(--faint); font-size: 11px; font-weight: 500; letter-spacing: 0; }
+.topology {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(13, 20, 32, .62);
+}
+.topology-label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.topology-line { height: 1px; background: linear-gradient(90deg, var(--line-strong), rgba(40, 215, 192, .4), var(--line-strong)); }
+.topology-group { display: flex; align-items: center; gap: 7px; }
+.mini-node { width: 9px; height: 9px; border-radius: 3px; background: var(--faint); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.mini-node.healthy, .mini-node.running, .mini-node.complete { background: var(--green); box-shadow: 0 0 8px rgba(69,221,160,.35); }
+.mini-node.failed { background: var(--red); box-shadow: 0 0 8px rgba(255,107,122,.4); }
+.mini-node.loading, .mini-node.starting { background: var(--blue); }
+.mini-node.stale, .mini-node.waiting, .mini-node.saving { background: var(--amber); }
+.section { margin-top: 28px; }
+.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.section-title { display: flex; align-items: center; gap: 10px; }
+.section-icon { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 9px; color: var(--cyan); background: var(--surface); font: 700 12px/1 ui-monospace, monospace; }
+h2 { margin: 0; font-size: 16px; letter-spacing: -.01em; }
+.section-note { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.legend { display: flex; gap: 13px; color: var(--muted); font-size: 11px; }
+.legend span { display: flex; align-items: center; gap: 5px; }
+.legend i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.legend .warn { background: var(--amber); }
+.legend .bad { background: var(--red); }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(250px, 1fr)); gap: 12px; }
+.node {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(150deg, rgba(17, 27, 42, .96), rgba(11, 18, 29, .96));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .15);
+  transition: transform .2s, border-color .2s, box-shadow .2s;
+}
+.node:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: 0 18px 44px rgba(0,0,0,.24); }
+.node::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--state-color, var(--faint)); }
+.node[data-state="healthy"], .node[data-state="running"], .node[data-state="complete"] { --state-color: var(--green); }
+.node[data-state="failed"] { --state-color: var(--red); }
+.node[data-state="stale"], .node[data-state="waiting"], .node[data-state="saving"] { --state-color: var(--amber); }
+.node[data-state="loading"], .node[data-state="starting"] { --state-color: var(--blue); }
+.node-main { padding: 17px 17px 15px 19px; }
+.node-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.node-ident { display: flex; min-width: 0; gap: 10px; }
+.node-index { display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 10px; color: #dbe7f5; background: var(--surface-3); font: 700 12px/1 ui-monospace, monospace; }
+.node-name { font-weight: 700; letter-spacing: -.01em; }
+.node-ip { overflow: hidden; margin-top: 2px; color: var(--muted); font: 11px/1.4 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.state {
+  flex: 0 0 auto;
+  max-width: 112px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--state-color, var(--faint)) 28%, transparent);
+  border-radius: 999px;
+  color: var(--state-color, var(--muted));
+  background: color-mix(in srgb, var(--state-color, var(--faint)) 8%, transparent);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-meta { display: flex; justify-content: space-between; gap: 8px; margin: 17px 0 7px; color: var(--muted); font-size: 10px; }
+.progress-meta strong { color: #d7e0ec; font-weight: 600; }
+.progress { height: 5px; overflow: hidden; border-radius: 99px; background: #070c14; }
+.progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), var(--cyan)); box-shadow: 0 0 12px rgba(40, 215, 192, .25); transition: width .5s ease; }
+.facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 15px; }
+.fact { min-width: 0; padding: 9px 9px 8px; border: 1px solid rgba(148,163,184,.08); border-radius: 10px; background: rgba(7, 12, 20, .46); }
+.fact span { display: block; overflow: hidden; color: var(--muted); font-size: 9px; letter-spacing: .03em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.fact b { display: block; overflow: hidden; margin-top: 4px; color: #e6edf6; font: 650 13px/1.2 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,107,122,.22); border-radius: 10px; color: #ffb1b9; background: rgba(95, 25, 38, .24); font-size: 11px; word-break: break-word; }
+.error strong { display: block; margin-bottom: 3px; color: var(--red); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.node-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 13px; color: var(--faint); font-size: 10px; }
+.node-foot .fresh { color: var(--green); }
+.node-foot .old { color: var(--amber); }
+details { border-top: 1px solid var(--line); background: rgba(5, 9, 15, .34); }
+summary { display: flex; align-items: center; justify-content: space-between; padding: 10px 17px 10px 19px; color: var(--muted); font-size: 10px; cursor: pointer; list-style: none; user-select: none; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; color: var(--faint); font: 15px/1 ui-monospace, monospace; }
+details[open] summary::after { content: "−"; }
+.tail { max-height: 170px; overflow: auto; margin: 0; padding: 0 17px 15px 19px; color: #91a3b8; font: 10px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.empty { padding: 28px; border: 1px dashed var(--line-strong); border-radius: var(--radius); color: var(--muted); text-align: center; }
+.footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 28px; padding: 16px 2px 0; border-top: 1px solid var(--line); color: var(--faint); font-size: 10px; }
+.footer code { overflow: hidden; max-width: 60vw; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.offline-banner { display: none; margin-top: 14px; padding: 11px 14px; border: 1px solid rgba(255,107,122,.25); border-radius: 12px; color: #ffb1b9; background: rgba(95,25,38,.2); }
+body.offline .offline-banner { display: block; }
+@media (max-width: 1200px) {
+  .grid { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+  .metrics { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 720px) {
+  .shell { padding: 16px 14px 30px; }
+  .nav { align-items: flex-start; }
+  .brand-copy span, .refresh-info { display: none; }
+  .hero { align-items: flex-start; flex-direction: column; min-height: 0; padding: 24px 20px; }
+  .cluster-state { width: 100%; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .metric:last-child { grid-column: span 2; }
+  .topology { grid-template-columns: auto 1fr; }
+  .topology-line { display: none; }
+  .grid { grid-template-columns: 1fr; }
+  .legend { display: none; }
+  .facts { grid-template-columns: repeat(2, 1fr); }
+  .footer { align-items: flex-start; flex-direction: column; }
+  .footer code { max-width: 100%; }
+}
+</style>
+</head>
+<body data-overall="starting">
+<div class="shell">
+  <nav class="nav">
+    <div class="brand">
+      <div class="brand-mark"><i></i></div>
+      <div class="brand-copy"><strong>MTP CONTROL</strong><span>ASCEND DISTRIBUTED TRAINING</span></div>
+    </div>
+    <div class="nav-actions">
+      <span class="refresh-info" id="refreshInfo">5 秒后刷新</span>
+      <button class="control" id="pauseButton" type="button">暂停</button>
+      <button class="control" id="refreshButton" type="button">立即刷新</button>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <div class="eyebrow">Cluster overview</div>
+      <h1 id="title">Ascend MTP Cluster</h1>
+      <div class="hero-sub" id="stamp">正在读取集群状态…</div>
+    </div>
+    <div class="cluster-state">
+      <i class="pulse"></i>
+      <div><strong id="overall">正在连接</strong><small id="overallNote">等待第一份状态快照</small></div>
+    </div>
+  </header>
+
+  <div class="offline-banner" id="offlineBanner">无法读取状态 API，页面将继续自动重试。</div>
+  <section class="metrics" id="summary"></section>
+  <section class="topology">
+    <span class="topology-label">拓扑状态</span>
+    <div class="topology-line"></div>
+    <div class="topology-group" id="verifierTopology"></div>
+    <div class="topology-line"></div>
+    <div class="topology-group" id="trainerTopology"></div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-title"><span class="section-icon">V</span><div><h2>Verifier 节点</h2><div class="section-note">隐藏状态生成与推理服务</div></div></div>
+      <div class="legend"><span><i></i>正常</span><span><i class="warn"></i>等待</span><span><i class="bad"></i>异常</span></div>
+    </div>
+    <div class="grid" id="verifiers"></div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-title"><span class="section-icon">T</span><div><h2>Trainer 节点</h2><div class="section-note">FSDP 分布式训练进度</div></div></div>
+    </div>
+    <div class="grid" id="trainers"></div>
+  </section>
+
+  <footer class="footer"><span>只读监控 · 健康检查与日志解析 · 自动刷新</span><code id="config"></code></footer>
+</div>
 <script>
-const esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmtAge=s=>s==null?'—':s<60?s+' 秒':s<3600?Math.floor(s/60)+' 分':Math.floor(s/3600)+' 小时';
-const fact=(k,v)=>`<div class="fact"><span>${esc(k)}</span>${esc(v)}</div>`;
-function nodeCard(n){let progress=n.kind==='trainer'&&n.epoch_total?Math.min(100,100*(n.epoch_current||0)/n.epoch_total):(n.kv_cache_percent||0);let facts=n.kind==='verifier'?[fact('Prompt TPS',n.prompt_tps),fact('Generation TPS',n.generation_tps),fact('请求 Running / Waiting',`${n.running_requests??'—'} / ${n.waiting_requests??'—'}`),fact('KV Cache',n.kv_cache_percent==null?'—':n.kv_cache_percent+'%'),fact('尾部成功请求',n.successful_requests_in_tail),fact('HS 分片修复',n.hidden_state_repairs_in_tail)]:[fact('角色',n.role),fact('Epoch',n.epoch_total?`${n.epoch_current??0} / ${n.epoch_total}`:'—'),fact('Step',n.step_total?`${n.step_current??0} / ${n.step_total}`:(n.step_current??'—')),fact('Loss',n.loss??'—'),fact('日志距今',fmtAge(n.log.age_seconds)),fact('警告 / 错误',`${n.recent_warnings} / ${n.recent_errors}`)];return `<article class="node"><div class="node-head"><div><div class="name">${n.kind==='verifier'?'Verifier':'Trainer'} ${n.index}</div><div class="muted">${esc(n.ip)}</div></div><div class="state ${esc(n.state)}">${esc(n.phase)}</div></div><div class="kv"><i style="width:${progress}%"></i></div><div class="facts">${facts.join('')}</div>${n.latest_error?`<div class="err">${esc(n.latest_error)}</div>`:''}<div class="tail">${esc((n.tail||[]).join('\n'))}</div></article>`}
-function metric(k,v){return `<div class="metric"><span class="muted">${esc(k)}</span><b>${esc(v)}</b></div>`}
-async function refresh(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();document.title=d.cluster_name+' · MTP';document.getElementById('title').textContent=d.cluster_name;document.getElementById('stamp').textContent='更新时间 '+new Date(d.generated_at*1000).toLocaleString();document.getElementById('overall').textContent=d.overall;let dot=document.getElementById('dot');dot.style.background=d.overall==='failed'?'var(--bad)':d.overall==='running'||d.overall==='ready'?'var(--ok)':'var(--warn)';document.getElementById('summary').innerHTML=[metric('健康 Verifier',d.summary.healthy_verifiers+' / '+d.summary.total_verifiers),metric('活跃 Trainer',d.summary.active_trainers+' / '+d.summary.total_trainers),metric('异常节点',d.summary.failed_nodes),metric('Prompt TPS',d.summary.total_prompt_tps),metric('Generation TPS',d.summary.total_generation_tps)].join('');document.getElementById('verifiers').innerHTML=d.verifiers.map(nodeCard).join('');document.getElementById('trainers').innerHTML=d.trainers.map(nodeCard).join('');document.getElementById('config').textContent=d.config_path}catch(e){document.getElementById('stamp').textContent='刷新失败: '+e}}refresh();setInterval(refresh,5000);
-</script></body></html>'''
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '—').replace(/[&<>"']/g, char => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[char]));
+const number = value => value == null ? '—' : Number(value).toLocaleString(undefined, {maximumFractionDigits: 2});
+const age = seconds => seconds == null ? '未知' : seconds < 10 ? '刚刚' : seconds < 60 ? `${seconds} 秒前` : seconds < 3600 ? `${Math.floor(seconds / 60)} 分钟前` : `${Math.floor(seconds / 3600)} 小时前`;
+const stateText = {failed:'集群异常', running:'训练运行中', ready:'Verifier 就绪', starting:'正在启动'};
+const stateNote = {failed:'检测到需要处理的节点', running:'在线生成与训练链路工作中', ready:'等待训练任务启动', starting:'正在等待节点和日志'};
+let paused = false;
+let remaining = 5;
+let refreshing = false;
+
+function metric(label, value, unit, color) {
+  return `<article class="metric" style="--metric-color:${color}"><div class="metric-label"><span>${esc(label)}</span></div><strong class="metric-value">${esc(value)}${unit ? `<span class="metric-unit">${esc(unit)}</span>` : ''}</strong></article>`;
+}
+function fact(label, value) {
+  return `<div class="fact"><span>${esc(label)}</span><b title="${esc(value)}">${esc(value)}</b></div>`;
+}
+function progressInfo(node) {
+  if (node.kind === 'verifier') {
+    const value = Math.max(0, Math.min(100, node.kv_cache_percent || 0));
+    return {label:'KV Cache', value, text:node.kv_cache_percent == null ? '暂无数据' : `${number(node.kv_cache_percent)}%`};
+  }
+  if (node.step_total) {
+    const value = Math.max(0, Math.min(100, 100 * (node.step_current || 0) / node.step_total));
+    return {label:'当前 Epoch 步数', value, text:`${number(node.step_current || 0)} / ${number(node.step_total)}`};
+  }
+  if (node.epoch_total) {
+    const value = Math.max(0, Math.min(100, 100 * (node.epoch_current || 0) / node.epoch_total));
+    return {label:'训练 Epoch', value, text:`${number(node.epoch_current || 0)} / ${number(node.epoch_total)}`};
+  }
+  return {label:'启动进度', value:node.state === 'complete' ? 100 : 0, text:node.phase};
+}
+function nodeCard(node) {
+  const progress = progressInfo(node);
+  const freshness = node.log && node.log.age_seconds != null && node.log.age_seconds < 60;
+  const facts = node.kind === 'verifier' ? [
+    fact('Prompt TPS', number(node.prompt_tps)),
+    fact('Generation TPS', number(node.generation_tps)),
+    fact('Running / Waiting', `${number(node.running_requests)} / ${number(node.waiting_requests)}`),
+    fact('健康延迟', node.health && node.health.latency_ms != null ? `${node.health.latency_ms} ms` : '—'),
+    fact('成功请求', number(node.successful_requests_in_tail)),
+    fact('警告 / 错误', `${number(node.recent_warnings)} / ${number(node.recent_errors)}`)
+  ] : [
+    fact('运行角色', node.role || '—'),
+    fact('Epoch', node.epoch_total ? `${number(node.epoch_current || 0)} / ${number(node.epoch_total)}` : '—'),
+    fact('Global Step', number(node.step_current)),
+    fact('Loss', number(node.loss)),
+    fact('日志更新', age(node.log && node.log.age_seconds)),
+    fact('警告 / 错误', `${number(node.recent_warnings)} / ${number(node.recent_errors)}`)
+  ];
+  const error = node.latest_error ? `<div class="error"><strong>Latest error</strong>${esc(node.latest_error)}</div>` : '';
+  const tail = (node.tail || []).length ? esc(node.tail.join('\n')) : '暂无日志内容';
+  return `<article class="node" data-state="${esc(node.state)}">
+    <div class="node-main">
+      <div class="node-head">
+        <div class="node-ident"><span class="node-index">${node.kind === 'verifier' ? 'V' : 'T'}${node.index}</span><div><div class="node-name">${node.kind === 'verifier' ? 'Verifier' : 'Trainer'} ${node.index}</div><div class="node-ip">${esc(node.ip)}</div></div></div>
+        <span class="state">${esc(node.phase)}</span>
+      </div>
+      <div class="progress-meta"><span>${esc(progress.label)}</span><strong>${esc(progress.text)}</strong></div>
+      <div class="progress"><i style="width:${progress.value}%"></i></div>
+      <div class="facts">${facts.join('')}</div>
+      ${error}
+      <div class="node-foot"><span class="${freshness ? 'fresh' : 'old'}">● ${freshness ? '日志活跃' : '日志更新 ' + age(node.log && node.log.age_seconds)}</span><span>${esc(node.state)}</span></div>
+    </div>
+    <details><summary>查看最近日志</summary><pre class="tail">${tail}</pre></details>
+  </article>`;
+}
+function topology(nodes, prefix) {
+  return `<span class="topology-label">${prefix}</span>${nodes.map(node => `<i class="mini-node ${esc(node.state)}" title="${prefix}${node.index} · ${esc(node.phase)}"></i>`).join('')}`;
+}
+function render(data) {
+  document.body.classList.remove('offline');
+  document.body.dataset.overall = data.overall;
+  document.title = `${data.cluster_name} · MTP Control`;
+  $('title').textContent = data.cluster_name;
+  $('stamp').textContent = `状态快照 ${new Date(data.generated_at * 1000).toLocaleString()} · 5 秒自动刷新`;
+  $('overall').textContent = stateText[data.overall] || data.overall;
+  $('overallNote').textContent = stateNote[data.overall] || '集群状态已更新';
+  const summary = data.summary;
+  $('summary').innerHTML = [
+    metric('Verifier 健康', `${summary.healthy_verifiers} / ${summary.total_verifiers}`, '', 'var(--green)'),
+    metric('Trainer 活跃', `${summary.active_trainers} / ${summary.total_trainers}`, '', 'var(--cyan)'),
+    metric('异常节点', summary.failed_nodes, '', summary.failed_nodes ? 'var(--red)' : 'var(--green)'),
+    metric('Prompt 吞吐', number(summary.total_prompt_tps), 'tok/s', 'var(--blue)'),
+    metric('Generation 吞吐', number(summary.total_generation_tps), 'tok/s', 'var(--violet)')
+  ].join('');
+  $('verifierTopology').innerHTML = topology(data.verifiers, 'V');
+  $('trainerTopology').innerHTML = topology(data.trainers, 'T');
+  $('verifiers').innerHTML = data.verifiers.length ? data.verifiers.map(nodeCard).join('') : '<div class="empty">未配置 verifier</div>';
+  $('trainers').innerHTML = data.trainers.length ? data.trainers.map(nodeCard).join('') : '<div class="empty">未配置 trainer</div>';
+  $('config').textContent = data.config_path;
+  $('config').title = data.config_path;
+}
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  $('refreshButton').textContent = '刷新中…';
+  try {
+    const response = await fetch('/api/status', {cache:'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    render(await response.json());
+  } catch (error) {
+    document.body.classList.add('offline');
+    $('offlineBanner').textContent = `状态刷新失败：${error.message}。页面将继续自动重试。`;
+    $('stamp').textContent = `最后刷新失败 · ${new Date().toLocaleTimeString()}`;
+  } finally {
+    refreshing = false;
+    remaining = 5;
+    $('refreshButton').textContent = '立即刷新';
+  }
+}
+$('pauseButton').addEventListener('click', () => {
+  paused = !paused;
+  $('pauseButton').textContent = paused ? '继续刷新' : '暂停';
+  $('refreshInfo').textContent = paused ? '自动刷新已暂停' : `${remaining} 秒后刷新`;
+});
+$('refreshButton').addEventListener('click', refresh);
+setInterval(() => {
+  if (paused) return;
+  remaining -= 1;
+  if (remaining <= 0) refresh();
+  $('refreshInfo').textContent = `${Math.max(remaining, 0)} 秒后刷新`;
+}, 1000);
+refresh();
+</script>
+</body>
+</html>'''
 
 
 def make_handler(monitor: ClusterMonitor) -> type[BaseHTTPRequestHandler]:

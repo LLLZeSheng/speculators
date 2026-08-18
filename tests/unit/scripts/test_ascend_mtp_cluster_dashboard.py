@@ -114,4 +114,20 @@ def test_cluster_snapshot_supports_two_trainers(tmp_path: Path):
     assert len(snapshot["trainers"]) == 2
     assert snapshot["summary"]["total_verifiers"] == 4
     assert snapshot["summary"]["total_trainers"] == 2
-    assert "d.summary.total_trainers" in HTML
+    assert "summary.total_trainers" in HTML
+
+
+def test_dashboard_has_dependency_free_control_center_ui():
+    expected = (
+        "MTP CONTROL",
+        "Cluster overview",
+        'id="verifierTopology"',
+        'id="trainerTopology"',
+        'id="pauseButton"',
+        'id="refreshButton"',
+        "<details>",
+        "状态刷新失败",
+    )
+    assert all(marker in HTML for marker in expected)
+    assert "https://" not in HTML
+    assert "http://" not in HTML
