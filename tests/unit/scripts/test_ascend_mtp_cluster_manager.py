@@ -180,6 +180,70 @@ def test_manager_supports_four_verifiers_and_two_trainers(tmp_path: Path):
     assert "10.0.0.4" in result.stdout
 
 
+def test_start_verifiers_skips_healthy_nodes(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$*\" in\n"
+        "  *10.0.0.2:8077/health*) printf 200 ;;\n"
+        "  *) printf 000 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "start-verifiers", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "MANAGER_DRY_RUN": "1",
+            "DASHBOARD_AUTO_START": "0",
+        },
+    )
+
+    assert result.stdout.count("[start]") == 3
+    assert "verifier=1 host=10.0.0.2" in result.stdout
+    assert "reason=healthy" in result.stdout
+
+
+def test_start_verifier_targets_only_requested_index(tmp_path: Path):
+    config = tmp_path / "cluster.yaml"
+    _write_user_yaml(config)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(MANAGER),
+            "start-verifier",
+            "--index",
+            "2",
+            "--config",
+            str(config),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "MANAGER_DRY_RUN": "1",
+            "DASHBOARD_AUTO_START": "0",
+        },
+    )
+
+    assert result.stdout.count("[start]") == 1
+    assert "host=10.0.0.3" in result.stdout
+    assert "VERIFIER_ID=2" in result.stdout
+    assert "host=10.0.0.1" not in result.stdout
+
+
 def test_manager_reuses_existing_container_without_renaming_it(tmp_path: Path):
     config = tmp_path / "cluster.yaml"
     _write_user_yaml(config)

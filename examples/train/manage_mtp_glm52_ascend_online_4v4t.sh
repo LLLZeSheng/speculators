@@ -15,12 +15,13 @@ DEFAULT_CONTAINER_PREFIX=glm52-mtp3
 usage() {
     cat <<'EOF'
 Usage:
-  manage_mtp_glm52_ascend_online_4v4t.sh COMMAND [--config FILE]
+  manage_mtp_glm52_ascend_online_4v4t.sh COMMAND [--config FILE] [--index N]
 
 Commands:
   validate-config  Validate the user-maintained YAML without opening SSH.
   preflight        Run non-training validation on every configured node.
-  start-verifiers  Start four verifier containers in the background.
+  start-verifiers  Ensure all four verifiers are running; skip healthy/running ones.
+  start-verifier   Ensure one verifier is running (requires --index 0..3).
   wait-verifiers   Wait until all verifier health endpoints return HTTP 200.
   smoke            Start the two-step smoke job on all trainer nodes.
   train            Start the production online-cache training job.
@@ -37,6 +38,7 @@ Commands:
 Options:
   --config FILE    User-maintained YAML. Default:
                    /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+  --index N        Verifier index for start-verifier (0, 1, 2, or 3).
 
 Runtime environment overrides:
   SSH_USER=root SSH_PORT=22 SSH_IDENTITY_FILE=/path/to/key
@@ -62,14 +64,21 @@ quote() {
 }
 
 CONFIG_FILE=$DEFAULT_CONFIG
+TARGET_INDEX=
 parse_config_option() {
     while (( $# )); do
         case "$1" in
             --config) CONFIG_FILE=${2:-}; shift 2 ;;
+            --index) TARGET_INDEX=${2:-}; shift 2 ;;
             -h | --help) usage; exit 0 ;;
             *) fail "unknown option: $1" ;;
         esac
     done
+}
+
+validate_verifier_index() {
+    [[ $TARGET_INDEX =~ ^[0-3]$ ]] || \
+        fail "--index must be one of: 0, 1, 2, 3"
 }
 
 load_config() {
@@ -161,6 +170,17 @@ remote() {
     ssh "${SSH_ARGS[@]}" "${SSH_USER:-root}@${host}" "$@"
 }
 
+remote_test() {
+    local host=$1
+    shift
+    if [[ ${MANAGER_DRY_RUN:-0} == 1 ]]; then
+        return 1
+    fi
+    ssh_args
+    ssh "${SSH_ARGS[@]}" "${SSH_USER:-root}@${host}" "$@" \
+        >/dev/null 2>&1
+}
+
 build_remote_command() {
     local destination=$1
     shift
@@ -235,6 +255,85 @@ start_group() {
     local index
     for index in "${!addresses[@]}"; do
         start_node "${addresses[$index]}" "$role" "$index" "$mode"
+    done
+}
+
+verifier_health_code() {
+    local host=$1
+    curl --noproxy '*' -sS -m 2 -o /dev/null -w '%{http_code}' \
+        "http://${host}:${VERIFIER_PORT}/health" 2>/dev/null || true
+}
+
+verifier_job_is_running() {
+    local index=$1
+    local host=${CLUSTER_VERIFIER_IPS[$index]}
+    local container
+    container=$(container_for verifier "$index")
+    if [[ $CONTAINER_MODE == existing ]]; then
+        local pid_file="$LOG_ROOT/runtime_pids/$container.verifier$index.pid"
+        local check_command
+        check_command="docker exec $(quote "$container") bash -lc "
+        check_command+=$(quote "test -s $pid_file && pid=\$(cat $pid_file) && [[ \$pid =~ ^[0-9]+$ ]] && kill -0 \"\$pid\" 2>/dev/null")
+        remote_test "$host" "$check_command"
+    else
+        remote_test "$host" \
+            "docker inspect -f '{{.State.Running}}' $(quote "$container") 2>/dev/null | grep -qx true"
+    fi
+}
+
+verifier_container_exists() {
+    local index=$1
+    local host=${CLUSTER_VERIFIER_IPS[$index]}
+    local container
+    container=$(container_for verifier "$index")
+    remote_test "$host" \
+        "docker inspect $(quote "$container") >/dev/null 2>&1"
+}
+
+verifier_container_is_running() {
+    local index=$1
+    local host=${CLUSTER_VERIFIER_IPS[$index]}
+    local container
+    container=$(container_for verifier "$index")
+    remote_test "$host" \
+        "docker inspect -f '{{.State.Running}}' $(quote "$container") 2>/dev/null | grep -qx true"
+}
+
+ensure_verifier() {
+    local index=$1
+    local host=${CLUSTER_VERIFIER_IPS[$index]}
+    local container code
+    container=$(container_for verifier "$index")
+    code=$(verifier_health_code "$host")
+    if [[ $code == 200 ]]; then
+        printf '[skip] verifier=%s host=%s container=%s reason=healthy\n' \
+            "$index" "$host" "$container"
+        return
+    fi
+    if verifier_job_is_running "$index"; then
+        printf '[skip] verifier=%s host=%s container=%s reason=process-running health=%s\n' \
+            "$index" "$host" "$container" "${code:-unreachable}"
+        printf 'WARNING: verifier %s is running but not healthy; wait or inspect its log before restarting it.\n' \
+            "$index" >&2
+        return
+    fi
+    if verifier_container_exists "$index" && \
+        ! verifier_container_is_running "$index"; then
+        printf '[start-container] verifier=%s host=%s container=%s\n' \
+            "$index" "$host" "$container"
+        remote "$host" "docker start $(quote "$container") >/dev/null"
+        if [[ $CONTAINER_MODE == existing ]]; then
+            start_node "$host" verifier "$index"
+        fi
+        return
+    fi
+    start_node "$host" verifier "$index"
+}
+
+ensure_verifiers() {
+    local index
+    for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+        ensure_verifier "$index"
     done
 }
 
@@ -487,7 +586,12 @@ case "$COMMAND" in
         done
         ;;
     start-verifiers)
-        start_group verifier '' CLUSTER_VERIFIER_IPS
+        ensure_verifiers
+        start_dashboard
+        ;;
+    start-verifier)
+        validate_verifier_index
+        ensure_verifier "$TARGET_INDEX"
         start_dashboard
         ;;
     wait-verifiers)

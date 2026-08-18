@@ -172,6 +172,16 @@ bash "$MANAGER" status --config "$CONFIG"
 bash "$MANAGER" train --config "$CONFIG"
 ```
 
+`start-verifiers` is idempotent. It skips healthy nodes, avoids a duplicate
+launch when a verifier process exists but is still becoming healthy, and only
+starts nodes with no running verifier job. To target one YAML entry, run:
+
+```bash
+bash "$MANAGER" start-verifier --index 2 --config "$CONFIG"
+```
+
+The index is the zero-based position in `verifier_ips` (`0..3`).
+
 For an offline cache-only resume:
 
 ```bash

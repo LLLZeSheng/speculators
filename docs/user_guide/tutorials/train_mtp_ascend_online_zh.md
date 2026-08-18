@@ -258,6 +258,16 @@ bash "$MANAGER" start-verifiers --config "$CONFIG"
 bash "$MANAGER" wait-verifiers --config "$CONFIG"
 ```
 
+`start-verifiers` 是幂等操作：逐台检查 `/health`，健康节点直接跳过；进程
+仍在运行但尚未健康的节点也不会重复启动；只有确认任务未运行的节点才会
+拉起。只处理一台时使用：
+
+```bash
+bash "$MANAGER" start-verifier --index 2 --config "$CONFIG"
+```
+
+这里的 `--index` 对应 YAML 中 `verifier_ips` 的下标 `0..3`。
+
 `wait-verifiers` 会等待四个 `/health` 接口全部返回 HTTP 200。启动日志在：
 
 ```text
