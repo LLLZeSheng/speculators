@@ -36,6 +36,10 @@ INIT_REPLACEMENT = INIT_ANCHOR + f"""        # {PATCH_MARKER}
 LOCK_ANCHOR = """                fcntl.flock(lock_fd, fcntl.LOCK_EX)
             future = self._executor.submit(
 """
+USE_LOCK_ANCHOR = "            if self.use_lock:\n"
+USE_LOCK_REPLACEMENT = (
+    "            if self.use_lock and not self._synchronous_write_fallback:\n"
+)
 LOCK_REPLACEMENT = """                try:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 except OSError as error:
@@ -113,12 +117,14 @@ def apply(target: Path) -> int:
     for name, anchor in (
         ("import", IMPORT_ANCHOR),
         ("initialization", INIT_ANCHOR),
+        ("use-lock", USE_LOCK_ANCHOR),
         ("lock", LOCK_ANCHOR),
     ):
         if text.count(anchor) != 1:
             raise RuntimeError(f"unsupported vLLM source: {name} anchor is not unique")
     patched = text.replace(IMPORT_ANCHOR, IMPORT_REPLACEMENT, 1)
     patched = patched.replace(INIT_ANCHOR, INIT_REPLACEMENT, 1)
+    patched = patched.replace(USE_LOCK_ANCHOR, USE_LOCK_REPLACEMENT, 1)
     patched = patched.replace(LOCK_ANCHOR, LOCK_REPLACEMENT, 1)
     compile(patched, str(target), "exec")
     backup = backup_path(target)

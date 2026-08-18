@@ -32,6 +32,7 @@ def test_patch_apply_check_restore(tmp_path: Path):
     assert apply(target) == 0
     patched = target.read_text()
     assert patched.count(PATCH_MARKER) == 1
+    assert "if self.use_lock and not self._synchronous_write_fallback:" in patched
     assert "error.errno != errno.ENOLCK" in patched
     assert "self._write_tensors(tensors, event, filename, None)" in patched
     assert check(target) == 0
