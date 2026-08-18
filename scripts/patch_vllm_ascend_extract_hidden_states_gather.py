@@ -39,6 +39,39 @@ REPLACEMENT = f"""            # {PATCH_MARKER}: the Ascend MoE/SP path may retur
                     state = tensor_model_parallel_all_gather(
                         state.contiguous(), dim=0
                     )
+                    # Some GLM DSA layouts use fewer token shards than TP
+                    # ranks (for example 8 unique shards on TP16), so TP
+                    # all-gather returns two identical full-sequence copies.
+                    # Collapse only copies proven identical; never silently
+                    # truncate potentially different states.
+                    if (
+                        state.shape[0] > num_scheduled_tokens
+                        and state.shape[0] % num_scheduled_tokens == 0
+                    ):
+                        copies = state.shape[0] // num_scheduled_tokens
+                        full_copies = state.reshape(
+                            copies, num_scheduled_tokens, *state.shape[1:]
+                        )
+                        if all(
+                            torch.equal(full_copies[0], full_copies[idx])
+                            for idx in range(1, copies)
+                        ):
+                            state = full_copies[0]
+                        elif num_scheduled_tokens % local_tokens == 0:
+                            unique_shards = num_scheduled_tokens // local_tokens
+                            rank_shards = state.reshape(
+                                unique_shards,
+                                copies,
+                                local_tokens,
+                                *state.shape[1:],
+                            )
+                            if all(
+                                torch.equal(rank_shards[:, 0], rank_shards[:, idx])
+                                for idx in range(1, copies)
+                            ):
+                                state = rank_shards[:, 0].reshape(
+                                    num_scheduled_tokens, *state.shape[1:]
+                                )
                     if state.shape[0] != num_scheduled_tokens:
                         raise RuntimeError(
                             "extract_hidden_states TP gather produced an "
