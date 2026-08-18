@@ -383,6 +383,8 @@ run_verifier() {
     run_cmd "$PYTHON_BIN" \
         "$REPO_ROOT/scripts/patch_vllm_ascend_hidden_state_cache.py"
     run_cmd "$PYTHON_BIN" \
+        "$REPO_ROOT/scripts/patch_vllm_ascend_extract_hidden_states_gather.py"
+    run_cmd "$PYTHON_BIN" \
         "$REPO_ROOT/scripts/patch_vllm_hidden_state_enolck.py"
     prepare_verifier_runtime_model
     publish_verifier_metadata
