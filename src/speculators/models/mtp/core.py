@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from transformers import PretrainedConfig
 from transformers.masking_utils import create_causal_mask
 
@@ -159,6 +160,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         position_ids: torch.Tensor | None = None,
         loss_mask: torch.Tensor | None = None,
         step_weights: list[float] | None = None,
+        logits_chunk_size: int | None = None,
+        activation_checkpointing: bool = False,
+        return_logits: bool = True,
         return_dict: bool = True,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
     ) -> tuple:
@@ -181,12 +185,21 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         :param loss_mask: Optional binary mask [1, seq_len]; 1=compute loss,
             0=ignore.
         :param step_weights: Per-step loss weights (None = uniform). Training only.
+        :param logits_chunk_size: Split the sequence dimension before projecting to
+            the full vocabulary. Each chunk is recomputed during backward, avoiding
+            retention of an 8K-by-vocabulary logits tensor. Disabled when unset.
+        :param activation_checkpointing: Recompute the MTP transformer layer during
+            backward instead of retaining its intermediate activations.
+        :param return_logits: Return per-step logits for inference/tests. Training can
+            disable this to avoid retaining three full-vocabulary tensors.
         :param return_dict: Unused, kept for interface compatibility.
         :param kwargs: Absorbs unexpected batch keys
             (lengths, verifier_last_hidden_states)
         :return: Tuple of (logits_list, loss, metrics)
         """
         input_ids = input_ids.long()
+        if logits_chunk_size is not None and logits_chunk_size <= 0:
+            raise ValueError("logits_chunk_size must be positive when provided")
         device = input_ids.device
         batch_size, seq_len = input_ids.shape
         num_steps = self.config.num_speculative_steps
@@ -239,16 +252,31 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             )
             step_pos_emb = self.rotary_emb(step_hidden, step_pos_ids)
 
-            mtp_output = self.mtp_layers[0](
-                hidden_states=step_hidden,
-                token_embeddings=step_embeds,
-                attention_mask=causal_mask,
-                position_ids=step_pos_ids,
-                position_embeddings=step_pos_emb,
-            )
+            def run_mtp_layer(
+                layer_hidden: torch.Tensor,
+                layer_embeds: torch.Tensor,
+                layer_position_embeddings: Any = step_pos_emb,
+            ) -> torch.Tensor:
+                return self.mtp_layers[0](
+                    hidden_states=layer_hidden,
+                    token_embeddings=layer_embeds,
+                    attention_mask=causal_mask,
+                    position_ids=step_pos_ids,
+                    position_embeddings=layer_position_embeddings,
+                )
 
-            logits = self.lm_head(mtp_output)
-            all_logits.append(logits)
+            checkpoint_layer = (
+                activation_checkpointing and self.training and torch.is_grad_enabled()
+            )
+            if checkpoint_layer:
+                mtp_output = checkpoint(
+                    run_mtp_layer,
+                    step_hidden,
+                    step_embeds,
+                    use_reentrant=False,
+                )
+            else:
+                mtp_output = run_mtp_layer(step_hidden, step_embeds)
 
             step_targets = input_ids[:, step + 2 : step + 2 + valid_len]
             if loss_mask is not None:
@@ -256,20 +284,69 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 step_targets = step_targets.clone()
                 step_targets[step_mask == 0] = _IGNORE_INDEX
             weight = step_weights[step] if step_weights is not None else 1.0
-            unreduced = nn.functional.cross_entropy(
-                logits.permute(0, 2, 1),
-                step_targets,
-                ignore_index=_IGNORE_INDEX,
-                reduction="none",
-            )
             valid_count = (step_targets != _IGNORE_INDEX).sum()
-            step_loss = weight * unreduced.sum() / valid_count.clamp(min=1)
+
+            # The ordinary path remains the default for API compatibility. The
+            # memory-efficient path projects only a bounded number of token
+            # positions at once. Non-reentrant checkpointing discards each chunk's
+            # full-vocabulary logits and recomputes it during backward.
+            chunk_size = logits_chunk_size if not return_logits else None
+            if chunk_size is None:
+                logits = self.lm_head(mtp_output)
+                if return_logits:
+                    all_logits.append(logits)
+                unreduced = nn.functional.cross_entropy(
+                    logits.permute(0, 2, 1),
+                    step_targets,
+                    ignore_index=_IGNORE_INDEX,
+                    reduction="none",
+                )
+                loss_sum = unreduced.float().sum()
+                predictions = logits.detach().argmax(dim=-1)
+            else:
+                loss_sum = torch.zeros((), device=device, dtype=torch.float32)
+                prediction_chunks: list[torch.Tensor] = []
+
+                for chunk_start in range(0, valid_len, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, valid_len)
+                    hidden_chunk = mtp_output[:, chunk_start:chunk_end]
+                    target_chunk = step_targets[:, chunk_start:chunk_end]
+
+                    def project_chunk(
+                        chunk_hidden: torch.Tensor, chunk_targets: torch.Tensor
+                    ) -> tuple[torch.Tensor, torch.Tensor]:
+                        chunk_logits = self.lm_head(chunk_hidden)
+                        chunk_loss = nn.functional.cross_entropy(
+                            chunk_logits.permute(0, 2, 1),
+                            chunk_targets,
+                            ignore_index=_IGNORE_INDEX,
+                            reduction="sum",
+                        )
+                        return chunk_loss.float(), chunk_logits.detach().argmax(dim=-1)
+
+                    if self.training and torch.is_grad_enabled():
+                        chunk_loss, chunk_predictions = checkpoint(
+                            project_chunk,
+                            hidden_chunk,
+                            target_chunk,
+                            use_reentrant=False,
+                        )
+                    else:
+                        chunk_loss, chunk_predictions = project_chunk(
+                            hidden_chunk, target_chunk
+                        )
+                    loss_sum = loss_sum + chunk_loss
+                    prediction_chunks.append(chunk_predictions)
+
+                predictions = torch.cat(prediction_chunks, dim=1)
+
+            step_loss = weight * loss_sum / valid_count.clamp(min=1)
             total_loss = total_loss + step_loss
             metrics[f"loss_step_{step}"] = step_loss.detach().clone()
 
             with torch.no_grad():
                 valid_targets = step_targets != _IGNORE_INDEX
-                correct = logits.argmax(dim=-1).eq(step_targets) & valid_targets
+                correct = predictions.eq(step_targets) & valid_targets
                 correct_count = correct.float().sum()
                 valid_count_float = valid_count.float()
 
@@ -375,6 +452,16 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 num_steps=kwargs["num_speculative_steps"],
             )
         train_kwargs: dict[str, Any] = {"step_weights": step_weights}
+        logits_chunk_size = kwargs.get("mtp_logits_chunk_size")
+        memory_efficient = bool(logits_chunk_size)
+        train_kwargs.update(
+            logits_chunk_size=logits_chunk_size,
+            activation_checkpointing=kwargs.get(
+                "mtp_activation_checkpointing", False
+            ),
+            return_logits=not memory_efficient,
+        )
         val_kwargs = train_kwargs.copy()
+        val_kwargs["activation_checkpointing"] = False
 
         return train_kwargs, val_kwargs

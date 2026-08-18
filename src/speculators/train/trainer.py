@@ -134,6 +134,8 @@ class TrainerConfig(NamedTuple):
     log_freq: int = 1
     fsdp_shard: bool = False
     fsdp_skip_initial_broadcast: bool = False
+    fsdp_wrap_policy: Literal["layer", "memory_efficient"] = "layer"
+    fsdp_min_numel: int = 8_000_000
     max_steps: int | None = None
 
 
@@ -422,7 +424,10 @@ class Trainer:
 
         with _StartupStage("fsdp_shard"):
             apply_fully_sharded(
-                self.model, param_dtype=self.config.hidden_states_dtype
+                self.model,
+                param_dtype=self.config.hidden_states_dtype,
+                wrap_policy=self.config.fsdp_wrap_policy,
+                min_numel=self.config.fsdp_min_numel,
             )
 
         if load_checkpoint:

@@ -190,6 +190,18 @@ class DraftArgs(_Group):
         description="Attention implementation for draft layers. Use 'sdpa' or 'eager' "
         "for hardware that doesn't support flex attention. Not supported for MTP.",
     )
+    mtp_logits_chunk_size: int | None = Field(
+        default=None,
+        ge=1,
+        description="For MTP training, project this many sequence positions to the "
+        "full vocabulary at a time and recompute chunks during backward. Reduces "
+        "8K+ logits memory substantially; unset preserves the original behavior.",
+    )
+    mtp_activation_checkpointing: bool = Field(
+        default=False,
+        description="Recompute the MTP transformer layer during backward to reduce "
+        "activation memory.",
+    )
 
 
 class DataArgs(_Group):
@@ -438,6 +450,18 @@ class TrainerArgs(_Group):
         "sharding. Safe only when every rank loaded the same complete "
         "--from-pretrained checkpoint. Checkpoint resume still performs its normal "
         "distributed load.",
+    )
+    fsdp_wrap_policy: Literal["layer", "memory_efficient"] = Field(
+        default="layer",
+        description="FSDP wrapping granularity. 'layer' preserves the original "
+        "behavior; 'memory_efficient' separately wraps large projections, routed "
+        "experts, embeddings, and LM heads to lower all-gather peak memory.",
+    )
+    fsdp_min_numel: int = Field(
+        default=8_000_000,
+        ge=1,
+        description="Minimum directly-owned parameter count for a submodule to get "
+        "its own FSDP unit under --fsdp-wrap-policy memory_efficient.",
     )
     max_steps: int | None = Field(
         default=None,

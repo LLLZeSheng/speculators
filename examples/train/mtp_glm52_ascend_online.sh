@@ -113,6 +113,10 @@ export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT/hs_connectors/src:$REPO_ROOT${PYTHO
 export SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK=${SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK:-/tmp/speculators-glm52-verifier-weights.lock}
 export SPECULATORS_STARTUP_HEARTBEAT_SECONDS=${STARTUP_HEARTBEAT_SECONDS:-30}
 FSDP_SKIP_INITIAL_BROADCAST=${FSDP_SKIP_INITIAL_BROADCAST:-1}
+FSDP_WRAP_POLICY=${FSDP_WRAP_POLICY:-memory_efficient}
+FSDP_MIN_NUMEL=${FSDP_MIN_NUMEL:-8000000}
+MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-1024}
+MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-1}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -166,6 +170,13 @@ run_logged() {
 validate_role() {
     [[ $FSDP_SKIP_INITIAL_BROADCAST == 0 || $FSDP_SKIP_INITIAL_BROADCAST == 1 ]] || \
         fail "FSDP_SKIP_INITIAL_BROADCAST must be 0 or 1"
+    [[ $FSDP_WRAP_POLICY == layer || $FSDP_WRAP_POLICY == memory_efficient ]] || \
+        fail "FSDP_WRAP_POLICY must be layer or memory_efficient"
+    [[ $FSDP_MIN_NUMEL =~ ^[1-9][0-9]*$ ]] || fail "FSDP_MIN_NUMEL must be positive"
+    [[ $MTP_LOGITS_CHUNK_SIZE =~ ^[1-9][0-9]*$ ]] || \
+        fail "MTP_LOGITS_CHUNK_SIZE must be positive"
+    [[ $MTP_ACTIVATION_CHECKPOINTING == 0 || $MTP_ACTIVATION_CHECKPOINTING == 1 ]] || \
+        fail "MTP_ACTIVATION_CHECKPOINTING must be 0 or 1"
     case "$ROLE" in
         preflight | verifier | collector | trainer) ;;
         smoke) require_value SMOKE_RUN_ID ;;
@@ -266,6 +277,8 @@ Resolved Ascend MTP3 configuration:
   REQUEST_TIMEOUT=$REQUEST_TIMEOUT MAX_RETRIES=$MAX_RETRIES
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
   TRAINER_DATA_MODE=$TRAINER_DATA_MODE
+  FSDP_WRAP_POLICY=$FSDP_WRAP_POLICY FSDP_MIN_NUMEL=$FSDP_MIN_NUMEL
+  MTP_LOGITS_CHUNK_SIZE=$MTP_LOGITS_CHUNK_SIZE MTP_ACTIVATION_CHECKPOINTING=$MTP_ACTIVATION_CHECKPOINTING
   OFFLINE_COLLECTION_CONCURRENCY=$OFFLINE_COLLECTION_CONCURRENCY
   OFFLINE_COLLECTION_MAX_SAMPLES=$OFFLINE_COLLECTION_MAX_SAMPLES
   OFFLINE_COLLECTION_WORLD_SIZE=$OFFLINE_COLLECTION_WORLD_SIZE OFFLINE_COLLECTION_RANK=$OFFLINE_COLLECTION_RANK
@@ -669,6 +682,7 @@ run_trainer() {
         --speculator-type mtp
         --num-speculative-steps 3
         --step-weight-beta "$STEP_WEIGHT_BETA"
+        --mtp-logits-chunk-size "$MTP_LOGITS_CHUNK_SIZE"
         --total-seq-len "$effective_seq_len"
         --hidden-states-dtype bfloat16
         --noise-std 0
@@ -685,7 +699,12 @@ run_trainer() {
         --max-retries "$MAX_RETRIES"
         --log-freq "$effective_log_freq"
         --fsdp-shard
+        --fsdp-wrap-policy "$FSDP_WRAP_POLICY"
+        --fsdp-min-numel "$FSDP_MIN_NUMEL"
     )
+    if [[ $MTP_ACTIVATION_CHECKPOINTING == 1 ]]; then
+        cmd+=(--mtp-activation-checkpointing)
+    fi
     # Every rank loads the same prepared MTP_DRAFT_PATH. FSDP can shard those
     # identical local tensors directly without broadcasting the full state dict
     # from rank 0 a second time. Set the YAML option false for diagnosis.

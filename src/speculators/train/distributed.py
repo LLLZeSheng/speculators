@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Literal
 
 import torch
 import torch.distributed as dist
@@ -195,7 +196,10 @@ def maybe_destroy_distributed() -> None:
 
 
 def apply_fully_sharded(
-    model: torch.nn.Module, param_dtype: torch.dtype = torch.bfloat16
+    model: torch.nn.Module,
+    param_dtype: torch.dtype = torch.bfloat16,
+    wrap_policy: Literal["layer", "memory_efficient"] = "layer",
+    min_numel: int = 8_000_000,
 ):
     """Applies torch FSDP fully_shard to the model, wrapping layers in FSDPModule.
 
@@ -208,9 +212,50 @@ def apply_fully_sharded(
         reduce_dtype=torch.float32,
     )
 
-    for layer in model.layers:  # type: ignore[union-attr]
-        fully_shard(layer, mp_policy=mp_policy)
+    if wrap_policy not in {"layer", "memory_efficient"}:
+        raise ValueError(f"Unsupported FSDP wrap policy: {wrap_policy}")
+    if min_numel <= 0:
+        raise ValueError(f"min_numel must be positive, got {min_numel}")
 
-    fully_shard(model, mp_policy=mp_policy)
+    wrapped: set[int] = set()
+
+    def shard(module: torch.nn.Module) -> None:
+        module_id = id(module)
+        if module_id in wrapped:
+            return
+        fully_shard(module, mp_policy=mp_policy)
+        wrapped.add(module_id)
+
+    if wrap_policy == "memory_efficient":
+        # FSDP all-gathers one wrapping unit at a time. GLM-MoE layers contain
+        # several multi-GiB projections; wrapping only the decoder layer makes
+        # all of them resident concurrently. Wrap large parameter-owning
+        # submodules bottom-up so attention, routed experts, shared experts,
+        # embeddings, and the vocabulary head can reshard independently.
+        layers = set(map(id, model.layers))  # type: ignore[union-attr]
+        candidates: list[tuple[str, torch.nn.Module, int]] = []
+        for name, module in model.named_modules():
+            if module is model or id(module) in layers:
+                continue
+            direct_numel = sum(
+                parameter.numel() for parameter in module.parameters(recurse=False)
+            )
+            if direct_numel >= min_numel:
+                candidates.append((name, module, direct_numel))
+
+        # Descendants must be wrapped before their ancestors.
+        candidates.sort(key=lambda item: item[0].count("."), reverse=True)
+        for name, module, direct_numel in candidates:
+            logger.info(
+                "FSDP memory-efficient wrap: module=%s parameters=%d",
+                name,
+                direct_numel,
+            )
+            shard(module)
+
+    for layer in model.layers:  # type: ignore[union-attr]
+        shard(layer)
+
+    shard(model)
 
     return model

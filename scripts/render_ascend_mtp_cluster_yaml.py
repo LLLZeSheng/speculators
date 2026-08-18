@@ -52,6 +52,10 @@ SCALAR_MAP = {
     "offline_validation_samples": "OFFLINE_VALIDATION_SAMPLES",
     "epochs": "EPOCHS",
     "fsdp_skip_initial_broadcast": "FSDP_SKIP_INITIAL_BROADCAST",
+    "fsdp_wrap_policy": "FSDP_WRAP_POLICY",
+    "fsdp_min_numel": "FSDP_MIN_NUMEL",
+    "mtp_logits_chunk_size": "MTP_LOGITS_CHUNK_SIZE",
+    "mtp_activation_checkpointing": "MTP_ACTIVATION_CHECKPOINTING",
     "startup_heartbeat_seconds": "STARTUP_HEARTBEAT_SECONDS",
     "trainer_mode": "TRAINER_MODE",
     "trainer_data_mode": "TRAINER_DATA_MODE",
@@ -316,6 +320,21 @@ def validate(config: dict[str, str | list[str]]) -> None:
         if not isinstance(value, str):
             raise ValueError("fsdp_skip_initial_broadcast must be a scalar")
         boolean_as_flag(value, "fsdp_skip_initial_broadcast")
+    if config.get("fsdp_wrap_policy", "memory_efficient") not in {
+        "layer",
+        "memory_efficient",
+    }:
+        raise ValueError("fsdp_wrap_policy must be layer or memory_efficient")
+    for key in ("fsdp_min_numel", "mtp_logits_chunk_size"):
+        if key in config:
+            value = config[key]
+            if not isinstance(value, str) or not value.isdigit() or int(value) < 1:
+                raise ValueError(f"{key} must be a positive integer")
+    if "mtp_activation_checkpointing" in config:
+        value = config["mtp_activation_checkpointing"]
+        if not isinstance(value, str):
+            raise ValueError("mtp_activation_checkpointing must be a scalar")
+        boolean_as_flag(value, "mtp_activation_checkpointing")
     if "startup_heartbeat_seconds" in config:
         value = config["startup_heartbeat_seconds"]
         if not isinstance(value, str) or not value.isdigit():
@@ -343,6 +362,7 @@ def render(config: dict[str, str | list[str]]) -> str:
         boolean_keys = {
             "dashboard_auto_start",
             "fsdp_skip_initial_broadcast",
+            "mtp_activation_checkpointing",
         }
         if yaml_key.startswith("install_speculators_") or yaml_key in boolean_keys:
             value = boolean_as_flag(value, yaml_key)

@@ -80,6 +80,57 @@ def test_forward_output_structure(mtp_model, seed):
         assert math.isfinite(metrics[key])
 
 
+def test_memory_efficient_logits_match_full_projection(mtp_model, seed):
+    """Chunked training computes the same loss/metrics without retaining logits."""
+    hidden_size = mtp_model.config.hidden_size
+    vocab_size = mtp_model.config.vocab_size
+    input_ids = torch.randint(0, vocab_size, (BATCH, SEQ_LEN))
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+    mtp_model.eval()
+
+    with torch.no_grad():
+        full_logits, full_loss, full_metrics = mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+        )
+        chunked_logits, chunked_loss, chunked_metrics = mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+            logits_chunk_size=2,
+            return_logits=False,
+        )
+
+    assert len(full_logits) == mtp_model.config.num_speculative_steps
+    assert chunked_logits == []
+    torch.testing.assert_close(chunked_loss, full_loss)
+    assert chunked_metrics.keys() == full_metrics.keys()
+    for key in chunked_metrics:
+        torch.testing.assert_close(chunked_metrics[key], full_metrics[key])
+
+
+def test_memory_efficient_forward_supports_backward(mtp_model, seed):
+    hidden_size = mtp_model.config.hidden_size
+    vocab_size = mtp_model.config.vocab_size
+    input_ids = torch.randint(0, vocab_size, (BATCH, SEQ_LEN))
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+    mtp_model.train()
+
+    _, loss, _ = mtp_model(
+        input_ids=input_ids,
+        hidden_states=hidden_states,
+        logits_chunk_size=2,
+        activation_checkpointing=True,
+        return_logits=False,
+    )
+    loss.backward()
+
+    assert any(
+        parameter.grad is not None
+        for parameter in mtp_model.mtp_layers.parameters()
+        if parameter.requires_grad
+    )
+
+
 def test_forward_reports_greedy_prefix_acceptance_metrics(mtp_model, seed):
     """Acceptance length counts consecutive correct recursive MTP predictions."""
     num_steps = mtp_model.config.num_speculative_steps
@@ -178,6 +229,21 @@ class TestStepWeights:
         assert metrics["loss_step_0"] > 0
         assert metrics["loss_step_1"] == 0.0
         assert metrics["loss_step_2"] == 0.0
+
+
+def test_trainer_kwargs_enable_memory_efficient_mtp_path():
+    train_kwargs, val_kwargs = MTPDraftModel.get_trainer_kwargs(
+        num_speculative_steps=3,
+        mtp_logits_chunk_size=256,
+        mtp_activation_checkpointing=True,
+    )
+
+    assert train_kwargs["logits_chunk_size"] == 256
+    assert train_kwargs["activation_checkpointing"] is True
+    assert train_kwargs["return_logits"] is False
+    assert val_kwargs["logits_chunk_size"] == 256
+    assert val_kwargs["activation_checkpointing"] is False
+    assert val_kwargs["return_logits"] is False
 
 
 # ===== Short sequence truncation =====

@@ -755,6 +755,8 @@ def main(cfg: TrainConfig):  # noqa: C901
         log_freq=args.log_freq,
         fsdp_shard=args.fsdp_shard,
         fsdp_skip_initial_broadcast=args.fsdp_skip_initial_broadcast,
+        fsdp_wrap_policy=args.fsdp_wrap_policy,
+        fsdp_min_numel=args.fsdp_min_numel,
         max_steps=args.max_steps,
     )
     trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)

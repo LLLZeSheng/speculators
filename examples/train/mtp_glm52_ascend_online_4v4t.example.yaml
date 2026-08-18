@@ -60,6 +60,10 @@ request_timeout: 900
 max_retries: 3
 epochs: 5
 fsdp_skip_initial_broadcast: true
+fsdp_wrap_policy: memory_efficient
+fsdp_min_numel: 8000000
+mtp_logits_chunk_size: 1024
+mtp_activation_checkpointing: true
 startup_heartbeat_seconds: 30
 trainer_mode: smoke
 trainer_data_mode: online-cache
