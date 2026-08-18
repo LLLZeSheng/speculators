@@ -5,6 +5,10 @@ import pytest
 from scripts.prepare_glm52_nuoya_32k import discover_files
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PREPARE_8K = REPO_ROOT / "examples/train/prepare_glm52_nuoya_8k.sh"
+
+
 def _touch_files(directory: Path, names: list[str]) -> None:
     directory.mkdir(parents=True)
     for name in names:
@@ -42,3 +46,12 @@ def test_discover_files_rejects_limit_larger_than_source(tmp_path: Path):
 
     with pytest.raises(ValueError, match="fewer than requested limit"):
         discover_files([str(source)], [2], jsonl_only=True)
+
+
+def test_8k_wrapper_exports_repo_pythonpath():
+    text = PREPARE_8K.read_text(encoding="utf-8")
+
+    assert 'export PYTHONPATH="$REPO_ROOT/src:' in text
+    assert "$REPO_ROOT/hs_connectors/src:" in text
+    assert "--source-file-limit 5" in text
+    assert "--source-file-limit 1" in text
