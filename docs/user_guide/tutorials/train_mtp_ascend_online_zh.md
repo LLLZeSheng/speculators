@@ -412,6 +412,12 @@ python scripts/patch_vllm_hidden_state_enolck.py --check
 python scripts/patch_vllm_hidden_state_enolck.py --restore
 ```
 
+verifier 会明确设置 `enable_dsa_cp=false`。当前 vLLM-Ascend 开启 DSA context
+parallel 后，`ExampleHiddenStatesConnector` 只能看到本 worker 的序列分片；例如
+CP=8 时，1024-token prompt 只会写出 128 行 hidden states，但 token_ids 仍是
+完整 1024 个。connector 尚未实现 CP all-gather，因此在线训练必须关闭 DSA
+CP。这会降低 verifier 吞吐，但能保证训练数据长度正确。
+
 成功标准：
 
 - loss 为有限值；

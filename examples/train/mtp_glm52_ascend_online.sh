@@ -417,7 +417,10 @@ run_verifier() {
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
         "${quantization_args[@]}"
         --enforce-eager
-        --additional-config '{"enable_dsa_cp":true,"enable_sparse_li_c8":true,"enable_flashcomm1":true,"enable_fused_mc2":false}'
+        # extract_hidden_states currently saves only the local sequence shard
+        # under DSA context parallelism (e.g. 1024 tokens become 128 at CP=8).
+        # Keep sequence states replicated so the file matches full token_ids.
+        --additional-config '{"enable_dsa_cp":false,"enable_sparse_li_c8":true,"enable_flashcomm1":true,"enable_fused_mc2":false}'
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then

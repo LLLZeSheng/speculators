@@ -383,6 +383,13 @@ python scripts/patch_vllm_hidden_state_enolck.py --check
 python scripts/patch_vllm_hidden_state_enolck.py --restore
 ```
 
+The verifier deliberately sets `enable_dsa_cp=false`. With DSA context
+parallelism enabled, vLLM-Ascend exposes only the worker-local sequence shard
+to `ExampleHiddenStatesConnector` (for example, 128 hidden-state rows for a
+1024-token prompt at CP=8), while `token_ids` still describes the full prompt.
+Until the connector implements a CP all-gather, disabling DSA CP is required
+for correct training data. This trades verifier throughput for correctness.
+
 Trainer logs and checkpoints:
 
 ```text
