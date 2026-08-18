@@ -386,6 +386,8 @@ run_verifier() {
         "$REPO_ROOT/scripts/patch_vllm_ascend_extract_hidden_states_gather.py"
     run_cmd "$PYTHON_BIN" \
         "$REPO_ROOT/scripts/patch_vllm_hidden_state_enolck.py"
+    run_cmd "$PYTHON_BIN" \
+        "$REPO_ROOT/scripts/patch_vllm_hidden_state_connector_tp_gather.py"
     prepare_verifier_runtime_model
     publish_verifier_metadata
     local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"
