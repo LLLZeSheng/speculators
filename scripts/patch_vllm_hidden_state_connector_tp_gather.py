@@ -21,7 +21,8 @@ DEFAULT_TARGET = Path(
     "/vllm-workspace/vllm/vllm/distributed/kv_transfer/kv_connector/v1/"
     "example_hidden_states_connector.py"
 )
-PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V1"
+PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V2"
+LEGACY_PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V1"
 IMPORT_ANCHOR = "from vllm.forward_context import get_forward_context\n"
 IMPORT_REPLACEMENT = (
     "from vllm.distributed import tensor_model_parallel_all_gather\n"
@@ -32,10 +33,10 @@ ORIGINAL = """                hidden_states_gpu = extract_from_kv_cache(
                 )
                 # Async DtoH copy into pinned host memory.
 """
-REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
+LEGACY_REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
                     kv_layer, req_slot_mapping_gpu, num_tokens
                 )
-                # {PATCH_MARKER}: request.token_ids is the authoritative full
+                # {LEGACY_PATCH_MARKER}: request.token_ids is the authoritative full
                 # prompt length. Ascend sequence parallelism can leave only a
                 # local token shard in the cache-only layer.
                 if hidden_states_gpu.shape[0] < num_tokens:
@@ -71,6 +72,113 @@ REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
                                 hidden_states_gpu = rank_shards[:, 0].reshape(
                                     num_tokens, *hidden_states_gpu.shape[1:]
                                 )
+                    if hidden_states_gpu.shape[0] != num_tokens:
+                        raise RuntimeError(
+                            "hidden-state connector TP gather produced an "
+                            f"invalid token dimension: local={{local_tokens}}, "
+                            f"gathered={{hidden_states_gpu.shape[0]}}, "
+                            f"expected={{num_tokens}}"
+                        )
+                    logger.warning_once(
+                        "Restored connector TP-sharded hidden states: "
+                        "local_tokens=%d full_tokens=%d",
+                        local_tokens,
+                        num_tokens,
+                    )
+                if hidden_states_gpu.shape[0] != num_tokens:
+                    raise RuntimeError(
+                        "hidden-state connector received an invalid token "
+                        f"dimension: actual={{hidden_states_gpu.shape[0]}}, "
+                        f"expected={{num_tokens}}"
+                    )
+                # Async DtoH copy into pinned host memory.
+"""
+
+REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
+                    kv_layer, req_slot_mapping_gpu, num_tokens
+                )
+                # {PATCH_MARKER}: request.token_ids is the authoritative full
+                # prompt length. Ascend sequence parallelism can leave a
+                # padded local token shard in the cache-only layer. A TP
+                # all-gather therefore need not equal num_tokens exactly: for
+                # example 959 tokens on TP16 may gather as 16 * 63 = 1008.
+                if hidden_states_gpu.shape[0] < num_tokens:
+                    local_tokens = hidden_states_gpu.shape[0]
+                    hidden_states_gpu = tensor_model_parallel_all_gather(
+                        hidden_states_gpu.contiguous(), dim=0
+                    )
+                    gathered_tokens = hidden_states_gpu.shape[0]
+
+                    if gathered_tokens > num_tokens:
+                        if gathered_tokens % local_tokens != 0:
+                            raise RuntimeError(
+                                "hidden-state connector TP gather is not made "
+                                "of equal local shards: "
+                                f"local={{local_tokens}}, gathered={{gathered_tokens}}"
+                            )
+
+                        rank_count = gathered_tokens // local_tokens
+                        gathered_shards = hidden_states_gpu.reshape(
+                            rank_count,
+                            local_tokens,
+                            *hidden_states_gpu.shape[1:],
+                        )
+                        # Find the smallest valid number of unique sequence
+                        # shards. Remaining TP ranks may contain adjacent or
+                        # grouped duplicate copies (for example SP8 on TP16).
+                        minimum_shards = (
+                            num_tokens + local_tokens - 1
+                        ) // local_tokens
+                        unique_rank_shards = None
+                        for unique_shards in range(minimum_shards, rank_count + 1):
+                            if rank_count % unique_shards != 0:
+                                continue
+                            copies = rank_count // unique_shards
+                            if copies == 1:
+                                unique_rank_shards = gathered_shards
+                                break
+
+                            adjacent = gathered_shards.reshape(
+                                unique_shards,
+                                copies,
+                                local_tokens,
+                                *hidden_states_gpu.shape[1:],
+                            )
+                            if all(
+                                torch.equal(adjacent[:, 0], adjacent[:, idx])
+                                for idx in range(1, copies)
+                            ):
+                                unique_rank_shards = adjacent[:, 0]
+                                break
+
+                            grouped = gathered_shards.reshape(
+                                copies,
+                                unique_shards,
+                                local_tokens,
+                                *hidden_states_gpu.shape[1:],
+                            )
+                            if all(
+                                torch.equal(grouped[0], grouped[idx])
+                                for idx in range(1, copies)
+                            ):
+                                unique_rank_shards = grouped[0]
+                                break
+
+                        if unique_rank_shards is not None:
+                            padded_hidden_states = unique_rank_shards.reshape(
+                                -1, *hidden_states_gpu.shape[1:]
+                            )
+                            trailing_padding = (
+                                padded_hidden_states.shape[0] - num_tokens
+                            )
+                            # The scheduler pads the global token stream before
+                            # splitting it into equal sequence shards. After
+                            # gathering in rank order, padding is therefore at
+                            # the end of the reconstructed stream, not at the
+                            # end of every individual rank's valid-token slice.
+                            if 0 <= trailing_padding < local_tokens:
+                                hidden_states_gpu = padded_hidden_states[:num_tokens]
+
                     if hidden_states_gpu.shape[0] != num_tokens:
                         raise RuntimeError(
                             "hidden-state connector TP gather produced an "
@@ -143,6 +251,21 @@ def apply(target: Path) -> int:
         return 0
     if PATCH_MARKER in text:
         raise RuntimeError("refusing to modify a partially patched source file")
+    if text.count(LEGACY_PATCH_MARKER) == 1:
+        if text.count(LEGACY_REPLACEMENT) != 1:
+            raise RuntimeError(
+                "unsupported legacy connector patch: replacement is not unique"
+            )
+        patched = text.replace(LEGACY_REPLACEMENT, REPLACEMENT, 1)
+        compile(patched, str(target), "exec")
+        atomic_write(target, patched)
+        print(
+            f"PATCH_STATUS=upgraded\nTARGET={target}\nBACKUP={backup_path(target)}"
+            "\nRESTART_REQUIRED=yes"
+        )
+        return 0
+    if LEGACY_PATCH_MARKER in text:
+        raise RuntimeError("refusing to modify a partially patched legacy source file")
     for name, anchor in (("import", IMPORT_ANCHOR), ("save", ORIGINAL)):
         if text.count(anchor) != 1:
             raise RuntimeError(

@@ -474,6 +474,9 @@ CP=8 时，1024-token prompt 只会写出 128 行 hidden states，但 token_ids 
 完整 1024 个。在线训练仍以关闭 DSA CP 为主；保存边界补丁会额外使用完整
 `token_ids` 长度校验结果，发现短分片时执行 TP gather，并在最终长度仍不一致
 时直接拒绝写出文件。这样不会再把 128/1024 的坏文件静默交给 trainer。
+TP gather 也会按各 rank 的真实 token 数移除对齐 padding；例如 TP16 下的
+959-token 请求即使以 16 个 63-token 缓冲区 gather 成 1008 行，也会在验证
+shard/副本布局后移除全局 token 流末尾的 49 行调度 padding，还原为 959 行。
 
 成功标准：
 
