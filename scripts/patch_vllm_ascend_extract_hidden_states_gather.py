@@ -46,7 +46,7 @@ REPLACEMENT = f"""            # {PATCH_MARKER}: the Ascend MoE/SP path may retur
                             f"gathered={{state.shape[0]}}, "
                             f"expected={{num_scheduled_tokens}}"
                         )
-                    logger.warning(
+                    logger.warning_once(
                         "Restored TP-sharded extract_hidden_states tensor: "
                         "local_tokens=%d full_tokens=%d",
                         local_tokens,
