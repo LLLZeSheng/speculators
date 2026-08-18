@@ -33,6 +33,9 @@ SCALAR_MAP = {
     "hidden_states_path": "HIDDEN_STATES_PATH",
     "output_path": "OUTPUT_PATH",
     "log_root": "LOG_ROOT",
+    "dashboard_host": "DASHBOARD_HOST",
+    "dashboard_port": "DASHBOARD_PORT",
+    "dashboard_auto_start": "DASHBOARD_AUTO_START",
     "verifier_port": "VERIFIER_PORT",
     "verifier_dp_size": "VERIFIER_DP_SIZE",
     "verifier_tp_size": "VERIFIER_TP_SIZE",
@@ -246,6 +249,19 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError("trainer_mode must be smoke or trainer")
     if config.get("trainer_data_mode") not in {"online-cache", "offline"}:
         raise ValueError("trainer_data_mode must be online-cache or offline")
+    if "dashboard_auto_start" in config:
+        value = config["dashboard_auto_start"]
+        if not isinstance(value, str):
+            raise ValueError("dashboard_auto_start must be a scalar")
+        boolean_as_flag(value, "dashboard_auto_start")
+    if "dashboard_port" in config:
+        value = config["dashboard_port"]
+        if (
+            not isinstance(value, str)
+            or not value.isdigit()
+            or not 1 <= int(value) <= 65535
+        ):
+            raise ValueError("dashboard_port must be an integer between 1 and 65535")
 
 
 def render(config: dict[str, str | list[str]]) -> str:
@@ -256,7 +272,10 @@ def render(config: dict[str, str | list[str]]) -> str:
             continue
         if not isinstance(value, str):
             raise ValueError(f"{yaml_key} must be a scalar")
-        if yaml_key.startswith("install_speculators_"):
+        if (
+            yaml_key.startswith("install_speculators_")
+            or yaml_key == "dashboard_auto_start"
+        ):
             value = boolean_as_flag(value, yaml_key)
         # Preserve explicit runtime overrides, matching the former shell config.
         lines.append(f"{shell_key}=${{{shell_key}:-{shlex.quote(value)}}}")

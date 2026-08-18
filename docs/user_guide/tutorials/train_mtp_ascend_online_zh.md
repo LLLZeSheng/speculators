@@ -358,6 +358,36 @@ RUN_NAME
 
 ## 8. 状态、TensorBoard 和停止
 
+### 控制节点 Web 看板
+
+YAML 中加入以下配置后，manager 会在执行 `start-verifiers`、`smoke`、
+`train` 或 `offline` 后，在控制节点自动启动只读看板：
+
+```yaml
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+```
+
+浏览器访问 `http://<控制节点IP>:6007`。页面每 5 秒刷新一次，汇总共享的
+host-wrapper 日志、verifier 详细日志和 `/health` 探测，展示全部 verifier 与
+trainer 的阶段、epoch/step/loss、prompt/generation 吞吐、请求排队、KV cache、
+日志更新时间及最近错误。它只在控制节点运行，不会在八个业务容器里安装任何
+依赖；对 `7.x` 内网 verifier 的健康探测会明确绕过 `HTTP_PROXY/HTTPS_PROXY`。
+
+手动管理命令：
+
+```bash
+bash "$MANAGER" dashboard --config "$CONFIG"
+bash "$MANAGER" dashboard-status --config "$CONFIG"
+bash "$MANAGER" stop-dashboard --config "$CONFIG"
+```
+
+控制节点有多张网卡且打印出的地址不正确时，设置
+`DASHBOARD_ADVERTISE_HOST=<控制节点IP>`。看板本身不带鉴权；非可信网络中应将
+`dashboard_host` 设为 `127.0.0.1` 并通过 SSH 隧道访问，或用防火墙保护 6007
+端口。集群 `stop` 不会停止看板，以便故障后继续查看最终日志。
+
 查看八台机器相关容器和最近日志：
 
 ```bash
@@ -401,7 +431,8 @@ hidden states，不会构造或加载原生 MTP drafter 的共享 embedding/head
 
 ## 10. 成功标准与恢复规则
 
-verifier 启动时会自动应用 `scripts/patch_vllm_hidden_state_enolck.py`。
+verifier 启动时会自动应用 `scripts/patch_vllm_hidden_state_enolck.py` 和
+`scripts/patch_vllm_hidden_state_connector_tp_gather.py`。
 当 `/kos_ulan` 等共享文件系统不支持 `flock` 并返回 `Errno 37` 时，该补丁会
 改为同步写完 hidden-state safetensors 后再返回路径。这样既不会使 EngineCore
 崩溃，也不会让 trainer 读到未写完整的文件。补丁不修改模型权重或 config，
@@ -410,13 +441,16 @@ verifier 启动时会自动应用 `scripts/patch_vllm_hidden_state_enolck.py`。
 ```bash
 python scripts/patch_vllm_hidden_state_enolck.py --check
 python scripts/patch_vllm_hidden_state_enolck.py --restore
+python scripts/patch_vllm_hidden_state_connector_tp_gather.py --check
+python scripts/patch_vllm_hidden_state_connector_tp_gather.py --restore
 ```
 
 verifier 会明确设置 `enable_dsa_cp=false`。当前 vLLM-Ascend 开启 DSA context
 parallel 后，`ExampleHiddenStatesConnector` 只能看到本 worker 的序列分片；例如
 CP=8 时，1024-token prompt 只会写出 128 行 hidden states，但 token_ids 仍是
-完整 1024 个。connector 尚未实现 CP all-gather，因此在线训练必须关闭 DSA
-CP。这会降低 verifier 吞吐，但能保证训练数据长度正确。
+完整 1024 个。在线训练仍以关闭 DSA CP 为主；保存边界补丁会额外使用完整
+`token_ids` 长度校验结果，发现短分片时执行 TP gather，并在最终长度仍不一致
+时直接拒绝写出文件。这样不会再把 128/1024 的坏文件静默交给 trainer。
 
 成功标准：
 

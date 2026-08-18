@@ -351,6 +351,39 @@ Never change `DATA_PATH`, `TRAIN_DATA_RATIO`, `TOTAL_SEQ_LEN`,
 
 ## 6. Logs, checkpoints, and TensorBoard
 
+### Control-node web dashboard
+
+The manager starts a dependency-free, read-only dashboard after
+`start-verifiers`, `smoke`, `train`, or `offline` when the YAML contains:
+
+```yaml
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+```
+
+Open `http://<control-node-ip>:6007`. The page refreshes every five seconds
+and combines the shared host-wrapper logs, detailed verifier logs, and direct
+`/health` probes. It shows all verifier and trainer nodes, startup/training
+phase, epoch/step/loss, prompt and generation throughput, queue depth, KV-cache
+usage, log age, and the latest error. It runs only on the control node and
+installs nothing in verifier or trainer containers. Health probes explicitly
+bypass `HTTP_PROXY` and `HTTPS_PROXY` so private cluster addresses remain local.
+
+Manual operations are:
+
+```bash
+bash "$MANAGER" dashboard --config "$CONFIG"
+bash "$MANAGER" dashboard-status --config "$CONFIG"
+bash "$MANAGER" stop-dashboard --config "$CONFIG"
+```
+
+Set `DASHBOARD_ADVERTISE_HOST=<control-node-ip>` when the control node has
+multiple interfaces and the printed URL selects the wrong one. The dashboard
+has no authentication; bind it to `127.0.0.1` and use an SSH tunnel, or protect
+port 6007 with the cluster firewall, when the network is not trusted. Cluster
+`stop` deliberately leaves the page running so the final logs remain visible.
+
 Verifier logs:
 
 ```text
@@ -362,7 +395,8 @@ Verifier logs:
 Verifier startup automatically runs
 `scripts/patch_vllm_glm52_final_hidden_state.py` and
 `scripts/patch_vllm_ascend_hidden_state_cache.py`, plus
-`scripts/patch_vllm_hidden_state_enolck.py`. In vLLM 0.23 the
+`scripts/patch_vllm_hidden_state_enolck.py` and
+`scripts/patch_vllm_hidden_state_connector_tp_gather.py`. In vLLM 0.23 the
 DeepSeek/GLM forward path samples auxiliary states before decoder blocks
 (`0..77`), while MTP layer id `78` denotes the final normalized output after
 the last block. The second patch prevents Ascend's MLA merge path from treating
@@ -381,14 +415,19 @@ python scripts/patch_vllm_ascend_hidden_state_cache.py --check
 python scripts/patch_vllm_ascend_hidden_state_cache.py --restore
 python scripts/patch_vllm_hidden_state_enolck.py --check
 python scripts/patch_vllm_hidden_state_enolck.py --restore
+python scripts/patch_vllm_hidden_state_connector_tp_gather.py --check
+python scripts/patch_vllm_hidden_state_connector_tp_gather.py --restore
 ```
 
 The verifier deliberately sets `enable_dsa_cp=false`. With DSA context
 parallelism enabled, vLLM-Ascend exposes only the worker-local sequence shard
 to `ExampleHiddenStatesConnector` (for example, 128 hidden-state rows for a
 1024-token prompt at CP=8), while `token_ids` still describes the full prompt.
-Until the connector implements a CP all-gather, disabling DSA CP is required
-for correct training data. This trades verifier throughput for correctness.
+The connector-boundary compatibility patch also compares the extracted tensor
+against the authoritative full `token_ids` length, performs a TP gather if a
+short shard still reaches the saver, and refuses to publish any mismatched
+file. Disabling DSA CP remains the primary path; the save-boundary check is a
+fail-closed second line of defense.
 
 Trainer logs and checkpoints:
 

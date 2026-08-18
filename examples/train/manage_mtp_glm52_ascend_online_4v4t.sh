@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 CONFIG_RENDERER=$REPO_ROOT/scripts/render_ascend_mtp_cluster_yaml.py
+DASHBOARD_SCRIPT=$REPO_ROOT/scripts/monitor_ascend_mtp_cluster.py
 
 DEFAULT_CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
 DEFAULT_REPO=/kos_ulan/spec_train/speculators
@@ -25,6 +26,9 @@ Commands:
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
   status           Show matching containers and recent host-wrapper logs.
+  dashboard        Start the control-node web dashboard.
+  dashboard-status Show dashboard process, URL, and log location.
+  stop-dashboard   Stop only the control-node web dashboard.
   restart-verifiers
                    Stop verifier jobs and restart only reused verifier containers.
   restart-trainers Stop trainer/smoke jobs and restart only reused trainer containers.
@@ -38,6 +42,8 @@ Runtime environment overrides:
   SSH_USER=root SSH_PORT=22 SSH_IDENTITY_FILE=/path/to/key
   SSH_STRICT_HOST_KEY_CHECKING=accept-new HEALTH_TIMEOUT=7200
   STOP_GRACE_SECONDS=15  # existing-mode job grace before container restart
+  DASHBOARD_ADVERTISE_HOST=control.node.ip  # URL shown to users
+  DASHBOARD_PYTHON=python3
   MANAGER_DRY_RUN=1  # print remote SSH commands without executing them
 
 Copy and edit examples/train/mtp_glm52_ascend_online_4v4t.example.yaml; this
@@ -98,6 +104,11 @@ load_config() {
     ORCHESTRATOR_LOG_ROOT=${ORCHESTRATOR_LOG_ROOT:-$SHARED_ROOT/spec_train/logs/orchestrator}
     CONTAINER_MODE=${CONTAINER_MODE:-create}
     EXISTING_CONTAINER_NAME=${EXISTING_CONTAINER_NAME:-}
+    DASHBOARD_HOST=${DASHBOARD_HOST:-0.0.0.0}
+    DASHBOARD_PORT=${DASHBOARD_PORT:-6007}
+    DASHBOARD_AUTO_START=${DASHBOARD_AUTO_START:-1}
+    DASHBOARD_LOG_FILE=${DASHBOARD_LOG_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.log}
+    DASHBOARD_PID_FILE=${DASHBOARD_PID_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.pid}
 }
 
 container_for() {
@@ -236,6 +247,115 @@ wait_verifiers() {
     done
 }
 
+dashboard_advertise_host() {
+    if [[ -n ${DASHBOARD_ADVERTISE_HOST:-} ]]; then
+        printf '%s' "$DASHBOARD_ADVERTISE_HOST"
+    elif [[ $DASHBOARD_HOST != 0.0.0.0 && $DASHBOARD_HOST != :: ]]; then
+        printf '%s' "$DASHBOARD_HOST"
+    else
+        local -a addresses=()
+        read -r -a addresses <<<"$(hostname -I 2>/dev/null || true)"
+        printf '%s' "${addresses[0]:-127.0.0.1}"
+    fi
+}
+
+dashboard_url() {
+    printf 'http://%s:%s' "$(dashboard_advertise_host)" "$DASHBOARD_PORT"
+}
+
+dashboard_running_pid() {
+    [[ -f $DASHBOARD_PID_FILE ]] || return 1
+    local owner pid
+    read -r owner pid <"$DASHBOARD_PID_FILE" || return 1
+    [[ $owner == "$(hostname)" && $pid =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    local command_line
+    command_line=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    [[ $command_line == *"$DASHBOARD_SCRIPT"* ]] || return 1
+    printf '%s' "$pid"
+}
+
+start_dashboard() {
+    local force=${1:-0}
+    if [[ $force != 1 && $DASHBOARD_AUTO_START != 1 ]]; then
+        printf '[dashboard] automatic startup disabled\n'
+        return
+    fi
+    [[ -f $DASHBOARD_SCRIPT ]] || fail "dashboard script not found: $DASHBOARD_SCRIPT"
+    local url
+    url=$(dashboard_url)
+    if [[ ${MANAGER_DRY_RUN:-0} == 1 ]]; then
+        printf '[dashboard-dry-run] %q %q --config %q --host %q --port %q\n' \
+            "${DASHBOARD_PYTHON:-python3}" "$DASHBOARD_SCRIPT" "$CONFIG_FILE" \
+            "$DASHBOARD_HOST" "$DASHBOARD_PORT"
+        printf 'DASHBOARD_URL=%s\n' "$url"
+        return
+    fi
+    local pid
+    if pid=$(dashboard_running_pid); then
+        printf '[dashboard] already running pid=%s\n' "$pid"
+        printf 'DASHBOARD_URL=%s\nDASHBOARD_LOG=%s\n' "$url" "$DASHBOARD_LOG_FILE"
+        return
+    fi
+    mkdir -p -- "$ORCHESTRATOR_LOG_ROOT"
+    rm -f -- "$DASHBOARD_PID_FILE"
+    nohup "${DASHBOARD_PYTHON:-python3}" "$DASHBOARD_SCRIPT" \
+        --config "$CONFIG_FILE" --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
+        >"$DASHBOARD_LOG_FILE" 2>&1 </dev/null &
+    pid=$!
+    printf '%s %s\n' "$(hostname)" "$pid" >"$DASHBOARD_PID_FILE"
+    local health_host=127.0.0.1
+    if [[ $DASHBOARD_HOST != 0.0.0.0 && $DASHBOARD_HOST != :: ]]; then
+        health_host=$DASHBOARD_HOST
+    fi
+    local attempt code=000
+    for attempt in {1..25}; do
+        code=$(curl --noproxy '*' -sS -m 1 -o /dev/null -w '%{http_code}' \
+            "http://$health_host:$DASHBOARD_PORT/health" 2>/dev/null || true)
+        [[ $code == 200 ]] && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    if [[ $code != 200 ]]; then
+        printf 'WARNING: dashboard did not become healthy; inspect %s\n' \
+            "$DASHBOARD_LOG_FILE" >&2
+    fi
+    printf '[dashboard] pid=%s\nDASHBOARD_URL=%s\nDASHBOARD_LOG=%s\n' \
+        "$pid" "$url" "$DASHBOARD_LOG_FILE"
+}
+
+dashboard_status() {
+    local pid
+    if pid=$(dashboard_running_pid); then
+        printf 'DASHBOARD_STATUS=running\nDASHBOARD_PID=%s\n' "$pid"
+    else
+        printf 'DASHBOARD_STATUS=stopped\n'
+    fi
+    printf 'DASHBOARD_URL=%s\nDASHBOARD_LOG=%s\n' \
+        "$(dashboard_url)" "$DASHBOARD_LOG_FILE"
+}
+
+stop_dashboard() {
+    local pid
+    if ! pid=$(dashboard_running_pid); then
+        rm -f -- "$DASHBOARD_PID_FILE"
+        printf '[dashboard] already stopped\n'
+        return
+    fi
+    printf '[dashboard-stop] pid=%s\n' "$pid"
+    if [[ ${MANAGER_DRY_RUN:-0} != 1 ]]; then
+        kill -TERM "$pid"
+        local attempt
+        for attempt in {1..25}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.2
+        done
+        kill -0 "$pid" 2>/dev/null && \
+            printf 'WARNING: dashboard pid %s is still running\n' "$pid" >&2
+        rm -f -- "$DASHBOARD_PID_FILE"
+    fi
+}
+
 show_role_status() {
     local role=$1
     local -n addresses=$2
@@ -258,6 +378,8 @@ show_status() {
     show_role_status verifier CLUSTER_VERIFIER_IPS
     show_role_status trainer CLUSTER_TRAINER_IPS
     show_role_status smoke CLUSTER_TRAINER_IPS
+    printf '\n[dashboard]\n'
+    dashboard_status
 }
 
 stop_role() {
@@ -345,12 +467,30 @@ case "$COMMAND" in
             index=$((index + 1))
         done
         ;;
-    start-verifiers) start_group verifier '' CLUSTER_VERIFIER_IPS ;;
-    wait-verifiers) wait_verifiers ;;
-    smoke) start_group smoke online-cache CLUSTER_TRAINER_IPS ;;
-    train) start_group trainer online-cache CLUSTER_TRAINER_IPS ;;
-    offline) start_group trainer offline CLUSTER_TRAINER_IPS ;;
+    start-verifiers)
+        start_group verifier '' CLUSTER_VERIFIER_IPS
+        start_dashboard
+        ;;
+    wait-verifiers)
+        start_dashboard
+        wait_verifiers
+        ;;
+    smoke)
+        start_group smoke online-cache CLUSTER_TRAINER_IPS
+        start_dashboard
+        ;;
+    train)
+        start_group trainer online-cache CLUSTER_TRAINER_IPS
+        start_dashboard
+        ;;
+    offline)
+        start_group trainer offline CLUSTER_TRAINER_IPS
+        start_dashboard
+        ;;
     status) show_status ;;
+    dashboard) start_dashboard 1 ;;
+    dashboard-status) dashboard_status ;;
+    stop-dashboard) stop_dashboard ;;
     restart-verifiers) restart_verifiers ;;
     restart-trainers) restart_trainers ;;
     stop) stop_cluster ;;

@@ -41,6 +41,12 @@ hidden_states_path: /kos_ulan/lzs/spec_train/hidden_states/glm52-w4a8-mg13-onlin
 output_path: /kos_ulan/lzs/spec_train/ckpts/glm52-w4a8-mg13
 log_root: /kos_ulan/lzs/spec_train/logs/glm52-w4a8-mg13
 
+# Read-only dashboard running on the control node. It reads shared logs and
+# probes verifier /health endpoints; no package is installed in the containers.
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+
 verifier_port: 8077
 verifier_dp_size: 1
 verifier_tp_size: 16

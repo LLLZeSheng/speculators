@@ -92,6 +92,9 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
     assert "- /root/.cache:/root/.cache" in text
     assert "install_speculators_verifier: false" in text
     assert "install_speculators_trainer: false" in text
+    assert "dashboard_host: 0.0.0.0" in text
+    assert "dashboard_port: 6007" in text
+    assert "dashboard_auto_start: true" in text
 
     result = subprocess.run(
         ["bash", str(MANAGER), "validate-config", "--config", str(config)],
@@ -117,6 +120,8 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
         assert f"NODE_RANK={rank}" in result.stdout
         assert f"VERIFIER_HOST=10.0.0.{rank + 1}" in result.stdout
     assert "MASTER_ADDR=10.0.1.1" in result.stdout
+    assert "DASHBOARD_URL=" in result.stdout
+    assert "monitor_ascend_mtp_cluster.py" in result.stdout
 
     result = subprocess.run(
         ["bash", str(MANAGER), "offline", "--config", str(config)],
