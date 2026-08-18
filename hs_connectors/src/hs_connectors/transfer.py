@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import shutil
@@ -118,15 +119,41 @@ class HiddenStatesBackend(ABC):
 # ---------------------------------------------------------------------------
 
 
+_STALE_READ_ATTEMPTS = 5
+
+
+def _is_stale_file_handle(error: BaseException) -> bool:
+    return (
+        isinstance(error, OSError) and error.errno == errno.ESTALE
+    ) or "stale file handle" in str(error).lower()
+
+
 def _load_hs_file(file_path: Path) -> dict[str, torch.Tensor] | None:
+    """Load a complete payload and detach it from the shared-file mmap.
+
+    safetensors uses mmap-backed CPU tensors.  Deleting or moving the generated
+    file immediately after ``load_file`` is safe on a local POSIX filesystem,
+    but distributed filesystems may invalidate the still-lazy mapping with
+    ESTALE.  Clone every tensor before returning and retry short-lived ESTALE
+    failures caused by metadata propagation on the shared filesystem.
+    """
     lock_path = str(file_path) + ".lock"
-    if Path(lock_path).exists():
-        wait_for_lock(lock_path)
+    for attempt in range(_STALE_READ_ATTEMPTS):
+        try:
+            if Path(lock_path).exists():
+                wait_for_lock(lock_path)
 
-    if file_path.exists():
-        return load_file(file_path)
+            if not file_path.exists():
+                return None
 
-    return None
+            mmap_tensors = load_file(file_path)
+            return {name: tensor.clone() for name, tensor in mmap_tensors.items()}
+        except Exception as error:  # noqa: BLE001 - filesystem boundary
+            if not _is_stale_file_handle(error) or attempt + 1 == _STALE_READ_ATTEMPTS:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+
+    raise AssertionError("unreachable")
 
 
 class FileTransfer(HiddenStatesTransfer):
