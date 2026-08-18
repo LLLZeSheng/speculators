@@ -420,7 +420,12 @@ run_verifier() {
         # extract_hidden_states currently saves only the local sequence shard
         # under DSA context parallelism (e.g. 1024 tokens become 128 at CP=8).
         # Keep sequence states replicated so the file matches full token_ids.
-        --additional-config '{"enable_dsa_cp":false,"enable_sparse_li_c8":true,"enable_flashcomm1":true,"enable_fused_mc2":false}'
+        # Hidden-state extraction must preserve the complete token dimension.
+        # DSA-CP shards it directly, while FlashComm1 also selects Ascend's
+        # sequence-parallel path.  The example connector writes the local
+        # tensor without gathering those shards, so both switches must stay
+        # disabled for verifier training-data collection.
+        --additional-config '{"enable_dsa_cp":false,"enable_sparse_li_c8":true,"enable_flashcomm1":false,"enable_fused_mc2":false}'
         --trust-remote-code
     )
     if [[ $DRY_RUN == 1 ]]; then

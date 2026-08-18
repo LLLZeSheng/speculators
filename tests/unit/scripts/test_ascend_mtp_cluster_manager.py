@@ -34,6 +34,7 @@ def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
 
     assert '"enable_balance_scheduling":true' not in text
     assert '"enable_dsa_cp":false' in text
+    assert '"enable_flashcomm1":false' in text
     assert '"enable_sparse_li_c8":true' in text
     assert "SPECULATORS_LOCAL_WEIGHT_LOAD_LOCK" in text
 
