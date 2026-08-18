@@ -427,8 +427,9 @@ distributed checkpoint load；若要对比诊断，可临时设置为 `false` �
 ## 7. epoch 1 之后严格离线恢复
 
 如果在线训练的首批请求受共享存储写入影响，可以先独立完成整套 hidden-state
-采集，再启动训练。四个 collector 分别使用对应 verifier，并按数据索引切成四个
-互不重叠的连续分片；重复执行会跳过已经存在的 `hs_<index>.safetensors`：
+采集，再启动训练。每个 collector 使用对应 verifier，并按 verifier 数量将数据
+切成互不重叠的连续分片；重复执行会跳过已经存在的
+`hs_<index>.safetensors`：
 
 ```bash
 CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t-8k.yaml
@@ -439,6 +440,19 @@ bash "$MANAGER" wait-verifiers --config "$CONFIG"
 bash "$MANAGER" collect-offline --config "$CONFIG"
 bash "$MANAGER" offline-status --config "$CONFIG"
 ```
+
+Verifier 数量由 `verifier_ips` 的长度动态决定，不局限于 4 台。仓库另提供了
+8 台 verifier、无 trainer 的专用采集模板：
+
+```text
+examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml
+```
+
+复制并填写 8 个地址后，使用同样的命令启动。Manager 会自动向每个 collector
+传递 `--world-size 8 --rank 0..7`。采集配置中的 `trainer_ips` 可以为空；
+`smoke`、`train` 和 `offline` 命令仍要求改用包含 2 或 4 个 trainer 的训练 YAML。
+采集 YAML 与训练 YAML 必须使用完全相同的 `data_path` 和
+`hidden_states_path`。
 
 全部 collector 结束后，先验证文件数量，并抽样加载 safetensors 检查 token 和
 hidden-state 长度。只有检查通过才会原子写入 `.offline-ready.json`：

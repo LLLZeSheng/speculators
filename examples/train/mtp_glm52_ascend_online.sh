@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Eight-node GLM-5.2 online MTP3 training on Ascend 910C / Atlas A3.
-# Topology: four 16-NPU verifier nodes plus four 16-NPU trainer nodes.
+# GLM-5.2 online/offline MTP3 workflow on Ascend 910C / Atlas A3.
+# Topology is supplied by YAML; each verifier uses 16 NPUs.
 # Run one role per node. See docs/user_guide/tutorials/train_mtp_ascend_online.md.
 
 set -euo pipefail
@@ -175,8 +175,7 @@ validate_role() {
 
 validate_verifier_id() {
     [[ $VERIFIER_ID =~ ^[0-9]+$ ]] || fail "VERIFIER_ID must be an integer"
-    ((VERIFIER_ID >= 0 && VERIFIER_ID < 4)) || \
-        fail "VERIFIER_ID must be in [0, 3]"
+    ((VERIFIER_ID >= 0)) || fail "VERIFIER_ID must be non-negative"
 }
 
 validate_verifier_quantization_mode() {

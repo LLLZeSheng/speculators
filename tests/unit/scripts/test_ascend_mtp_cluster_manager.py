@@ -12,6 +12,9 @@ TEMPLATE_4V2T = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v2t.example
 TEMPLATE_8K = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t_8k.example.yaml"
 )
+TEMPLATE_OFFLINE_8V = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml"
+)
 RENDERER = REPO_ROOT / "scripts/render_ascend_mtp_cluster_yaml.py"
 
 
@@ -66,6 +69,13 @@ def _write_8k_yaml(path: Path) -> None:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_offline_8v_yaml(path: Path) -> None:
+    text = TEMPLATE_OFFLINE_8V.read_text(encoding="utf-8")
+    for index in range(8):
+        text = text.replace(f"FILL_VERIFIER_{index}_IP", f"10.0.0.{index + 1}")
     path.write_text(text, encoding="utf-8")
 
 
@@ -127,6 +137,45 @@ def test_manager_dry_runs_four_offline_collectors(tmp_path: Path):
     assert result.stdout.count("OFFLINE_COLLECTION_WORLD_SIZE=4") == 4
     for rank in range(4):
         assert f"OFFLINE_COLLECTION_RANK={rank}" in result.stdout
+
+
+def test_manager_supports_collection_only_eight_verifiers(tmp_path: Path):
+    config = tmp_path / "offline-8v.yaml"
+    _write_offline_8v_yaml(config)
+
+    validate = subprocess.run(
+        ["bash", str(MANAGER), "validate-config", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "VERIFIERS=8" in validate.stdout
+    assert "TRAINERS=0" in validate.stdout
+
+    collect = subprocess.run(
+        ["bash", str(MANAGER), "collect-offline", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "MANAGER_DRY_RUN": "1",
+            "DASHBOARD_AUTO_START": "0",
+        },
+    )
+    assert collect.stdout.count("[start]") == 8
+    assert collect.stdout.count("ROLE=collector") == 8
+    assert collect.stdout.count("OFFLINE_COLLECTION_WORLD_SIZE=8") == 8
+    assert "OFFLINE_COLLECTION_RANK=7" in collect.stdout
+
+    train = subprocess.run(
+        ["bash", str(MANAGER), "train", "--config", str(config)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MANAGER_DRY_RUN": "1"},
+    )
+    assert train.returncode != 0
+    assert "requires exactly two or four trainer_ips" in train.stderr
 
 
 def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():

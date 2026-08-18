@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate and operate a user-configured 4-verifier + 2/4-trainer MTP cluster.
+# Validate and operate a user-configured N-verifier + 0/2/4-trainer MTP cluster.
 
 set -euo pipefail
 
@@ -20,10 +20,10 @@ Usage:
 Commands:
   validate-config  Validate the user-maintained YAML without opening SSH.
   preflight        Run non-training validation on every configured node.
-  start-verifiers  Ensure all four verifiers are running; skip healthy/running ones.
-  start-verifier   Ensure one verifier is running (requires --index 0..3).
+  start-verifiers  Ensure every configured verifier is running.
+  start-verifier   Ensure one configured verifier is running (requires --index N).
   wait-verifiers   Wait until all verifier health endpoints return HTTP 200.
-  collect-offline  Start four resumable hidden-state collectors, one per verifier.
+  collect-offline  Start one resumable collector per configured verifier.
   offline-status   Show collector jobs, logs, and current cache file count.
   verify-offline   Require a complete cache and publish .offline-ready.json.
   smoke            Start the two-step smoke job on all trainer nodes.
@@ -42,7 +42,7 @@ Commands:
 Options:
   --config FILE    User-maintained YAML. Default:
                    /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-  --index N        Verifier index for start-verifier (0, 1, 2, or 3).
+  --index N        Verifier index for start-verifier.
 
 Runtime environment overrides:
   SSH_USER=root SSH_PORT=22 SSH_IDENTITY_FILE=/path/to/key
@@ -52,7 +52,7 @@ Runtime environment overrides:
   DASHBOARD_PYTHON=python3
   MANAGER_DRY_RUN=1  # print remote SSH commands without executing them
 
-Copy and edit the 4v4t or 4v2t example YAML; this
+Copy and edit a checked-in online-training or offline-collection YAML; this
 manager never generates or rewrites the YAML. It deliberately does not store
 passwords; configure SSH keys first.
 EOF
@@ -81,8 +81,9 @@ parse_config_option() {
 }
 
 validate_verifier_index() {
-    [[ $TARGET_INDEX =~ ^[0-3]$ ]] || \
-        fail "--index must be one of: 0, 1, 2, 3"
+    [[ $TARGET_INDEX =~ ^[0-9]+$ ]] || fail "--index must be a non-negative integer"
+    ((TARGET_INDEX < ${#CLUSTER_VERIFIER_IPS[@]})) || \
+        fail "--index must be smaller than ${#CLUSTER_VERIFIER_IPS[@]}"
 }
 
 load_config() {
@@ -109,10 +110,10 @@ load_config() {
         fail "CLUSTER_VERIFIER_IPS is missing"
     declare -p CLUSTER_TRAINER_IPS >/dev/null 2>&1 || \
         fail "CLUSTER_TRAINER_IPS is missing"
-    ((${#CLUSTER_VERIFIER_IPS[@]} == 4)) || fail "expected four verifier IPs"
+    ((${#CLUSTER_VERIFIER_IPS[@]} >= 1)) || fail "expected at least one verifier IP"
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
-    ((trainer_count == 2 || trainer_count == 4)) || \
-        fail "expected two or four trainer IPs"
+    ((trainer_count == 0 || trainer_count == 2 || trainer_count == 4)) || \
+        fail "expected zero, two, or four trainer IPs"
     CONTAINER_NAME_PREFIX=${CONTAINER_NAME_PREFIX:-$DEFAULT_CONTAINER_PREFIX}
     REMOTE_REPO_PATH=${REMOTE_REPO_PATH:-$DEFAULT_REPO}
     SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
@@ -127,6 +128,11 @@ load_config() {
     OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-1}
     OFFLINE_COLLECTION_MAX_SAMPLES=${OFFLINE_COLLECTION_MAX_SAMPLES:-0}
     OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
+}
+
+require_trainers() {
+    ((${#CLUSTER_TRAINER_IPS[@]} == 2 || ${#CLUSTER_TRAINER_IPS[@]} == 4)) || \
+        fail "this command requires exactly two or four trainer_ips; use a training YAML"
 }
 
 verifier_hosts_for_trainer() {
@@ -367,9 +373,13 @@ start_collectors() {
 wait_verifiers() {
     local timeout=${HEALTH_TIMEOUT:-7200}
     local started=$SECONDS
-    local -a ready=(0 0 0 0)
+    local -a ready=()
+    local index
+    for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+        ready[$index]=0
+    done
     while :; do
-        local index remaining=0 code
+        local remaining=0 code
         for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
             if [[ ${ready[$index]} == 1 ]]; then
                 continue
@@ -664,14 +674,17 @@ case "$COMMAND" in
     offline-status) show_offline_status ;;
     verify-offline) verify_offline_cache ;;
     smoke)
+        require_trainers
         start_group smoke online-cache CLUSTER_TRAINER_IPS
         start_dashboard
         ;;
     train)
+        require_trainers
         start_group trainer online-cache CLUSTER_TRAINER_IPS
         start_dashboard
         ;;
     offline)
+        require_trainers
         if [[ ${MANAGER_DRY_RUN:-0} != 1 ]]; then
             verify_offline_cache
         else
@@ -685,7 +698,7 @@ case "$COMMAND" in
     dashboard-status) dashboard_status ;;
     stop-dashboard) stop_dashboard ;;
     restart-verifiers) restart_verifiers ;;
-    restart-trainers) restart_trainers ;;
+    restart-trainers) require_trainers; restart_trainers ;;
     stop-collectors) stop_role collector CLUSTER_VERIFIER_IPS ;;
     stop) stop_cluster ;;
     -h | --help | help) usage ;;

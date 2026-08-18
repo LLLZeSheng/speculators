@@ -141,20 +141,19 @@ def validate(config: dict[str, str | list[str]]) -> None:
     verifier_ips = config.get("verifier_ips")
     if (
         not isinstance(verifier_ips, list)
-        or len(verifier_ips) != 4
+        or len(verifier_ips) < 1
         or not all(verifier_ips)
     ):
-        raise ValueError(
-            "verifier_ips must contain exactly four non-empty addresses"
-        )
+        raise ValueError("verifier_ips must contain at least one non-empty address")
     trainer_ips = config.get("trainer_ips")
     if (
         not isinstance(trainer_ips, list)
-        or len(trainer_ips) not in {2, 4}
+        or len(trainer_ips) not in {0, 2, 4}
         or not all(trainer_ips)
     ):
         raise ValueError(
-            "trainer_ips must contain exactly two or four non-empty addresses"
+            "trainer_ips must be empty for collection-only configs or contain "
+            "exactly two or four non-empty addresses"
         )
     all_ips = [  # type: ignore[misc]
         *config["verifier_ips"],

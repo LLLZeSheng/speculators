@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-side wrapper for the 4-verifier + 2/4-trainer Ascend online MTP3 job.
+# Host-side wrapper for configurable Ascend online/offline MTP3 jobs.
 
 set -euo pipefail
 
@@ -82,11 +82,11 @@ resolve_cluster_role() {
         fail "ROLE is unset and CLUSTER_VERIFIER_IPS is not declared"
     array_is_declared CLUSTER_TRAINER_IPS || \
         fail "ROLE is unset and CLUSTER_TRAINER_IPS is not declared"
-    ((${#CLUSTER_VERIFIER_IPS[@]} == 4)) || \
-        fail "CLUSTER_VERIFIER_IPS must contain exactly four addresses"
+    ((${#CLUSTER_VERIFIER_IPS[@]} >= 1)) || \
+        fail "CLUSTER_VERIFIER_IPS must contain at least one address"
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
-    ((trainer_count == 2 || trainer_count == 4)) || \
-        fail "CLUSTER_TRAINER_IPS must contain exactly two or four addresses"
+    ((trainer_count == 0 || trainer_count == 2 || trainer_count == 4)) || \
+        fail "CLUSTER_TRAINER_IPS must be empty or contain exactly two or four addresses"
     case "$TRAINER_MODE" in
         smoke | trainer) ;;
         *) fail "TRAINER_MODE must be smoke or trainer" ;;
@@ -117,7 +117,7 @@ resolve_cluster_role() {
         fi
     done
     ((matches == 1)) || \
-        fail "could not uniquely map local addresses${NODE_IP:+ (NODE_IP=$NODE_IP)} to the configured 4-verifier + 2/4-trainer cluster"
+        fail "could not uniquely map local addresses${NODE_IP:+ (NODE_IP=$NODE_IP)} to the configured verifier/trainer cluster"
 }
 
 resolve_cluster_role
