@@ -172,12 +172,6 @@ case "$INSTALL_SPECULATORS" in
     *) fail "INSTALL_SPECULATORS must resolve to 0 or 1" ;;
 esac
 
-# Source installs stay disabled for the Ascend image because its setuptools
-# version is intentionally older than this repository's build requirement.
-# Make both source trees available to every process in a newly created
-# container (and to docker exec in existing mode), including vLLM workers that
-# are spawned after the launcher replaces itself with the vLLM CLI.
-PYTHONPATH="$CONTAINER_REPO_PATH/src:$CONTAINER_REPO_PATH/hs_connectors/src:$CONTAINER_REPO_PATH"
 case "$CONTAINER_MODE" in
     create | existing) ;;
     *) fail "CONTAINER_MODE must be create or existing" ;;
@@ -216,7 +210,7 @@ forward_vars=(
     ROLE DRY_RUN SHARED_ROOT VERIFIER_MODEL_PATH VERIFIER_SOURCE_MODEL_PATH MTP_INIT_MODEL_PATH DATA_PATH
     HIDDEN_STATES_PATH MTP_DRAFT_PATH OUTPUT_PATH LOG_ROOT VERIFIER_METADATA_PATH
     VERIFIER_RUNTIME_ROOT VERIFIER_QUANTIZATION_MODE CONTAINER_REPO_PATH
-    CONTAINER_NAME INSTALL_SPECULATORS PYTHONPATH
+    CONTAINER_NAME INSTALL_SPECULATORS
     SERVED_MODEL_NAME VERIFIER_HOST VERIFIER_HOSTS VERIFIER_ID VERIFIER_BIND_HOST VERIFIER_PORT
     VERIFIER_TP_SIZE VERIFIER_DP_SIZE VERIFIER_MAX_MODEL_LEN
     VERIFIER_MAX_NUM_SEQS VERIFIER_MAX_BATCHED_TOKENS

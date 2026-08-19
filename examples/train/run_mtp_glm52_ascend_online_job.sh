@@ -9,6 +9,10 @@ CONTAINER_NAME=${CONTAINER_NAME:?CONTAINER_NAME is required}
 ROLE=${ROLE:?ROLE is required}
 INSTALL_SPECULATORS=${INSTALL_SPECULATORS:-0}
 
+# Preserve the Ascend image's PYTHONPATH: it contains the CANN `acl` Python
+# bindings required by vLLM-Ascend workers.  Prepend the two repository source
+# trees only after entering the container instead of overriding PYTHONPATH on
+# `docker run`/`docker exec`.
 repo_pythonpath="$CONTAINER_REPO_PATH/src:$CONTAINER_REPO_PATH/hs_connectors/src:$CONTAINER_REPO_PATH"
 export PYTHONPATH="$repo_pythonpath${PYTHONPATH:+:$PYTHONPATH}"
 [[ -f $CONTAINER_REPO_PATH/hs_connectors/src/hs_connectors/__init__.py ]] || {
