@@ -286,6 +286,54 @@ smoke_seq_len: 8192
 `_move_states_to_device` 申请 6 GiB 处 OOM，应先清理旧 NPU 进程，或继续改造
 FSDP 的 CPU/meta 分片加载流程。
 
+### 4K 显存安全配置
+
+如果 8K 在 FSDP forward/backward all-gather 阶段仍需额外申请 6 GiB 而 OOM，
+使用独立的 4K 数据和缓存配置。准备脚本仍严格选择 Nuoya 前 5 个 JSONL 和
+`average-8k` 的第 1 个 JSONL，但按 4096 tokens 重新截断和打包：
+
+```bash
+cd /mnt/xds/mtp/spec_train/speculators
+nohup bash examples/train/prepare_glm52_nuoya_4k.sh \
+  > /mnt/xds/mtp/spec_train/dataset/prepare-nuoya-first5-long1-4k.log 2>&1 &
+```
+
+输出目录为：
+
+```text
+/mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-4k
+```
+
+复制专用于 existing 容器的配置，并填写 8 个 IP 与唯一 smoke ID：
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_4v4t_4k.example.yaml \
+  /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t-4k.yaml
+```
+
+该配置使用独立的 `hidden_states_path`、checkpoint 和日志目录，核心限制为：
+
+```yaml
+verifier_max_model_len: 4097
+verifier_max_batched_tokens: 4112
+total_seq_len: 4096
+smoke_seq_len: 4096
+mtp_logits_chunk_size: 256
+```
+
+从 8K 切换到上述 4K verifier 限制后，必须重启 verifier；仅修改 trainer 的
+`total_seq_len` 而继续使用 8K verifier 限制时则无需重启。完整切换命令：
+
+```bash
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t-4k.yaml
+bash "$MANAGER" restart-verifiers --config "$CONFIG"
+bash "$MANAGER" start-verifiers --config "$CONFIG"
+bash "$MANAGER" wait-verifiers --config "$CONFIG"
+bash "$MANAGER" restart-trainers --config "$CONFIG"
+bash "$MANAGER" smoke --config "$CONFIG"
+```
+
 ## 3. 一键预检
 
 ```bash

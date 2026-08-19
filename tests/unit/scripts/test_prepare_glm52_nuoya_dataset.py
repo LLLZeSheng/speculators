@@ -7,6 +7,7 @@ from scripts.prepare_glm52_nuoya_32k import discover_files
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PREPARE_8K = REPO_ROOT / "examples/train/prepare_glm52_nuoya_8k.sh"
+PREPARE_4K = REPO_ROOT / "examples/train/prepare_glm52_nuoya_4k.sh"
 
 
 def _touch_files(directory: Path, names: list[str]) -> None:
@@ -55,3 +56,13 @@ def test_8k_wrapper_exports_repo_pythonpath():
     assert "$REPO_ROOT/hs_connectors/src:" in text
     assert "--source-file-limit 5" in text
     assert "--source-file-limit 1" in text
+
+
+def test_4k_wrapper_uses_isolated_output_and_expected_sources():
+    text = PREPARE_4K.read_text(encoding="utf-8")
+
+    assert 'export PYTHONPATH="$REPO_ROOT/src:' in text
+    assert "nuoya-first5-long1-4k" in text
+    assert "--source-file-limit 5" in text
+    assert "--source-file-limit 1" in text
+    assert "--seq-length 4096" in text

@@ -12,6 +12,9 @@ TEMPLATE_4V2T = REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v2t.example
 TEMPLATE_8K = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t_8k.example.yaml"
 )
+TEMPLATE_4K = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t_4k.example.yaml"
+)
 TEMPLATE_OFFLINE_8V = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml"
 )
@@ -72,6 +75,24 @@ def _write_8k_yaml(path: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_4k_yaml(path: Path) -> None:
+    text = TEMPLATE_4K.read_text(encoding="utf-8")
+    replacements = {
+        "FILL_VERIFIER_0_IP": "10.0.0.1",
+        "FILL_VERIFIER_1_IP": "10.0.0.2",
+        "FILL_VERIFIER_2_IP": "10.0.0.3",
+        "FILL_VERIFIER_3_IP": "10.0.0.4",
+        "FILL_TRAINER_0_IP": "10.0.1.1",
+        "FILL_TRAINER_1_IP": "10.0.1.2",
+        "FILL_TRAINER_2_IP": "10.0.1.3",
+        "FILL_TRAINER_3_IP": "10.0.1.4",
+        "FILL_UNIQUE_SMOKE_ID": "unit-test-4k",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
 def _write_offline_8v_yaml(path: Path) -> None:
     text = TEMPLATE_OFFLINE_8V.read_text(encoding="utf-8")
     for index in range(8):
@@ -115,6 +136,29 @@ def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
         "OFFLINE_COLLECTION_MAX_SAMPLES="
         "${OFFLINE_COLLECTION_MAX_SAMPLES:-0}" in result.stdout
     )
+
+
+def test_4k_existing_profile_renders_isolated_memory_safe_limits(tmp_path: Path):
+    config = tmp_path / "cluster-4k.yaml"
+    _write_4k_yaml(config)
+
+    result = subprocess.run(
+        ["python", str(RENDERER), "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "CONTAINER_MODE=${CONTAINER_MODE:-existing}" in result.stdout
+    assert "nuoya-first5-long1-4k}" in result.stdout
+    assert "VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-4097}" in result.stdout
+    assert (
+        "VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-4112}"
+        in result.stdout
+    )
+    assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-4096}" in result.stdout
+    assert "SMOKE_SEQ_LEN=${SMOKE_SEQ_LEN:-4096}" in result.stdout
+    assert "MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-256}" in result.stdout
 
 
 def test_manager_dry_runs_four_offline_collectors(tmp_path: Path):
