@@ -219,40 +219,36 @@ def apply_fully_sharded(
 
     wrapped: set[int] = set()
 
-    def shard(
-        module: torch.nn.Module, *, reshard_after_forward: bool = True
-    ) -> None:
+    def shard(module: torch.nn.Module) -> None:
         module_id = id(module)
         if module_id in wrapped:
             return
-        fully_shard(
-            module,
-            mp_policy=mp_policy,
-            reshard_after_forward=reshard_after_forward,
-        )
+        fully_shard(module, mp_policy=mp_policy)
         wrapped.add(module_id)
 
-    # MTP computes its frozen vocabulary projection inside a non-reentrant
-    # activation checkpoint so that full-vocabulary logits are discarded per
-    # sequence chunk.  The checkpoint body is called again during backward. If
-    # lm_head belongs to the root group (or to a normal resharding child group),
-    # its weight may already be a sharded DTensor at that point while the saved
-    # hidden-state input is an ordinary Tensor.  F.linear rejects that mixture.
-    # Give the head its own group and retain its gathered ordinary Tensor from
-    # the first chunk through backward recomputation. It is frozen, so retaining
-    # it does not retain gradients or optimizer state.
+    # MTP computes its frozen vocabulary projection in multiple independent
+    # non-reentrant checkpoints. FSDP2 converts managed parameters back to
+    # DTensor after each backward invocation. Consequently, even a child group
+    # with reshard_after_forward=False becomes sharded after one chunk and the
+    # next checkpoint recomputation mixes a Tensor input with a DTensor weight.
+    #
+    # A frozen projection is model state but not an optimizable parameter.
+    # Registering its weight as a persistent buffer preserves the public
+    # ``lm_head.weight`` attribute and state-dict key while keeping it outside
+    # every FSDP parameter group. Root FSDP still moves buffers to the compute
+    # device, and F.linear consistently receives two ordinary tensors.
     lm_head = getattr(model, "lm_head", None)
-    if (
-        isinstance(lm_head, torch.nn.Module)
-        and hasattr(lm_head, "weight")
-        and not lm_head.weight.requires_grad
-    ):
+    if isinstance(lm_head, torch.nn.Module):
+        frozen_weight = lm_head._parameters.get("weight")  # noqa: SLF001
+    else:
+        frozen_weight = None
+    if frozen_weight is not None and not frozen_weight.requires_grad:
         logger.info(
-            "FSDP checkpoint-safe wrap: module=lm_head "
-            "reshard_after_forward=false parameters=%d",
-            sum(parameter.numel() for parameter in lm_head.parameters()),
+            "FSDP checkpoint-safe frozen buffer: module=lm_head parameters=%d",
+            frozen_weight.numel(),
         )
-        shard(lm_head, reshard_after_forward=False)
+        del lm_head._parameters["weight"]  # noqa: SLF001
+        lm_head.register_buffer("weight", frozen_weight.detach(), persistent=True)
 
     if wrap_policy == "memory_efficient":
         # FSDP all-gathers one wrapping unit at a time. GLM-MoE layers contain
@@ -261,8 +257,8 @@ def apply_fully_sharded(
         # submodules bottom-up so attention, routed experts, shared experts,
         # and embeddings can reshard independently.
         #
-        # lm_head was assigned above to a non-resharding child group, so it is
-        # skipped here and excluded automatically from the root group.
+        # Frozen lm_head.weight was converted to a buffer above, so it is not a
+        # candidate here and cannot be inherited by the root parameter group.
         layers = set(map(id, model.layers))  # type: ignore[union-attr]
         candidates: list[tuple[str, torch.nn.Module, int]] = []
         for name, module in model.named_modules():
