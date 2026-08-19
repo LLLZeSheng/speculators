@@ -9,6 +9,15 @@ CONTAINER_NAME=${CONTAINER_NAME:?CONTAINER_NAME is required}
 ROLE=${ROLE:?ROLE is required}
 INSTALL_SPECULATORS=${INSTALL_SPECULATORS:-0}
 
+repo_pythonpath="$CONTAINER_REPO_PATH/src:$CONTAINER_REPO_PATH/hs_connectors/src:$CONTAINER_REPO_PATH"
+export PYTHONPATH="$repo_pythonpath${PYTHONPATH:+:$PYTHONPATH}"
+[[ -f $CONTAINER_REPO_PATH/hs_connectors/src/hs_connectors/__init__.py ]] || {
+    printf 'ERROR: hs_connectors source is not visible in the container: %s\n' \
+        "$CONTAINER_REPO_PATH/hs_connectors/src/hs_connectors/__init__.py" >&2
+    printf 'ERROR: verify repo_path/container_repo_path and the repository volume mount\n' >&2
+    exit 2
+}
+
 job_slot=${VERIFIER_ID:-${NODE_RANK:-0}}
 pid_root=$LOG_ROOT/runtime_pids
 pid_file=$pid_root/$CONTAINER_NAME.$ROLE$job_slot.pid

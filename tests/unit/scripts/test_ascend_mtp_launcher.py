@@ -58,6 +58,11 @@ def test_container_wrapper_uses_requested_a3_image_and_all_devices():
     assert result.returncode == 0, result.stderr
     assert "quay.io/ascend/vllm-ascend:v0.23.0rc1-a3" in result.stdout
     assert "/mnt/xds/mtp:/mnt/xds/mtp" in result.stdout
+    assert (
+        "PYTHONPATH=/workspace/speculators/src:"
+        "/workspace/speculators/hs_connectors/src:/workspace/speculators"
+        in result.stdout
+    )
     assert "--device /dev/davinci0" in result.stdout
     assert "--device /dev/davinci15" in result.stdout
     assert "--ipc host" in result.stdout
