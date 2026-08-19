@@ -35,14 +35,20 @@ class GlmMoeExpertChunk(nn.Module):
         # Keep the callable without registering the same Module under every
         # expert chunk, which would create a shared child in the FSDP tree.
         object.__setattr__(self, "act_fn", act_fn)
-        # The slices are contiguous along dim 0 and intentionally share their
-        # original CPU storage until FSDP materializes each shard on-device.
-        # Cloning 18 GiB in every local rank during startup would create a much
-        # larger host-memory peak without changing training semantics.
+        # Each chunk must own storage whose offset starts at zero. A contiguous
+        # dim-0 slice is still a view into the original packed parameter and
+        # retains both its full backing storage and a growing storage_offset.
+        # FSDP2 later calls storage.resize_() while allocating all-gather
+        # outputs; keeping those views would make the requested allocation grow
+        # with the chunk index (for example, the eighth 384-MiB gate/up slice
+        # requests 3 GiB). Clone here so the physical allocation is bounded by
+        # the advertised per-chunk FSDP group size.
         self.gate_up_proj = nn.Parameter(
-            gate_up_proj.detach(), requires_grad=requires_grad
+            gate_up_proj.detach().clone(), requires_grad=requires_grad
         )
-        self.down_proj = nn.Parameter(down_proj.detach(), requires_grad=requires_grad)
+        self.down_proj = nn.Parameter(
+            down_proj.detach().clone(), requires_grad=requires_grad
+        )
 
     def forward(
         self,

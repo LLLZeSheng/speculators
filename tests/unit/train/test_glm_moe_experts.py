@@ -76,3 +76,25 @@ def test_chunked_experts_bound_each_parameter_group():
         sum(parameter.numel() for parameter in chunk.parameters())
         for chunk in chunked.chunks
     ) == 3 * (2 * 3 * 6 + 6 * 3)
+
+
+def test_chunked_experts_use_independent_zero_offset_storage():
+    packed = _PackedExperts(num_experts=7, hidden_dim=6, intermediate_dim=3)
+    chunked = ChunkedGlmMoeExperts(packed, experts_per_unit=3)
+
+    gate_storages = []
+    down_storages = []
+    for chunk in chunked.chunks:
+        assert chunk.gate_up_proj.storage_offset() == 0
+        assert chunk.down_proj.storage_offset() == 0
+        assert chunk.gate_up_proj.untyped_storage().nbytes() == (
+            chunk.gate_up_proj.numel() * chunk.gate_up_proj.element_size()
+        )
+        assert chunk.down_proj.untyped_storage().nbytes() == (
+            chunk.down_proj.numel() * chunk.down_proj.element_size()
+        )
+        gate_storages.append(chunk.gate_up_proj.untyped_storage().data_ptr())
+        down_storages.append(chunk.down_proj.untyped_storage().data_ptr())
+
+    assert len(set(gate_storages)) == len(gate_storages)
+    assert len(set(down_storages)) == len(down_storages)
