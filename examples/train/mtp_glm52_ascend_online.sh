@@ -37,6 +37,7 @@ VERIFIER_BIND_HOST=${VERIFIER_BIND_HOST:-0.0.0.0}
 VERIFIER_PORT=${VERIFIER_PORT:-8077}
 VERIFIER_TP_SIZE=${VERIFIER_TP_SIZE:-16}
 VERIFIER_DP_SIZE=${VERIFIER_DP_SIZE:-1}
+VERIFIER_BLOCK_SIZE=${VERIFIER_BLOCK_SIZE:-128}
 VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-32769}
 VERIFIER_MAX_NUM_SEQS=${VERIFIER_MAX_NUM_SEQS:-1}
 VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-32784}
@@ -238,6 +239,13 @@ validate_trainer_data_mode() {
     esac
 }
 
+validate_verifier_block_size() {
+    [[ $VERIFIER_BLOCK_SIZE =~ ^[1-9][0-9]*$ ]] || \
+        fail "VERIFIER_BLOCK_SIZE must be a positive integer"
+    ((VERIFIER_BLOCK_SIZE == 128)) || \
+        fail "VERIFIER_BLOCK_SIZE must be 128 for the Ascend SFA backend"
+}
+
 validate_context_window() {
     local input_length=$1
     [[ $input_length =~ ^[0-9]+$ && $VERIFIER_MAX_MODEL_LEN =~ ^[0-9]+$ && \
@@ -272,7 +280,7 @@ Resolved Ascend MTP3 configuration:
   NNODES=$NNODES NPROC_PER_NODE=$NPROC_PER_NODE NODE_RANK=${NODE_RANK:-<unset>}
   LOCAL_IP=${LOCAL_IP:-<auto>} NIC_NAME=${NIC_NAME:-<auto>}
   VLLM_HOST_IP=${VLLM_HOST_IP:-<auto>}
-  VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE
+  VERIFIER_DP_SIZE=$VERIFIER_DP_SIZE VERIFIER_TP_SIZE=$VERIFIER_TP_SIZE VERIFIER_BLOCK_SIZE=$VERIFIER_BLOCK_SIZE
   VERIFIER_MAX_MODEL_LEN=$VERIFIER_MAX_MODEL_LEN VERIFIER_MAX_BATCHED_TOKENS=$VERIFIER_MAX_BATCHED_TOKENS
   VERIFIER_MAX_NUM_SEQS=$VERIFIER_MAX_NUM_SEQS VERIFIER_GPU_MEMORY_UTILIZATION=$VERIFIER_GPU_MEMORY_UTILIZATION
   TOTAL_SEQ_LEN=$TOTAL_SEQ_LEN SMOKE_SEQ_LEN=$SMOKE_SEQ_LEN
@@ -419,6 +427,7 @@ run_preflight() {
 run_verifier() {
     validate_verifier_id
     validate_verifier_quantization_mode
+    validate_verifier_block_size
     run_preflight --require-vllm
     # vLLM 0.23's DeepSeek/GLM model does not expose layer id
     # ``num_hidden_layers`` (the final normalized verifier state).  Apply the
@@ -464,6 +473,10 @@ run_verifier() {
         --max-model-len "$VERIFIER_MAX_MODEL_LEN"
         --max-num-batched-tokens "$VERIFIER_MAX_BATCHED_TOKENS"
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
+        # Ascend SFA advertises only a 128-token kernel block. vLLM may
+        # otherwise retain its generic default of 16 after prefix caching is
+        # disabled, which fails late in worker initialization.
+        --block-size "$VERIFIER_BLOCK_SIZE"
         "${quantization_args[@]}"
         --enforce-eager
         # V1 enables automatic prefix caching by default. A cache hit skips

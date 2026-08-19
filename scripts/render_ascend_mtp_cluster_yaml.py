@@ -39,6 +39,7 @@ SCALAR_MAP = {
     "verifier_port": "VERIFIER_PORT",
     "verifier_dp_size": "VERIFIER_DP_SIZE",
     "verifier_tp_size": "VERIFIER_TP_SIZE",
+    "verifier_block_size": "VERIFIER_BLOCK_SIZE",
     "verifier_max_model_len": "VERIFIER_MAX_MODEL_LEN",
     "verifier_max_num_seqs": "VERIFIER_MAX_NUM_SEQS",
     "verifier_max_batched_tokens": "VERIFIER_MAX_BATCHED_TOKENS",
@@ -266,6 +267,12 @@ def validate(config: dict[str, str | list[str]]) -> None:
             raise ValueError("offline_collection_concurrency must be positive")
     if numbers["verifier_dp_size"] * numbers["verifier_tp_size"] != 16:
         raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
+    verifier_block_size = config.get("verifier_block_size")
+    if verifier_block_size is not None:
+        if verifier_block_size != "128":
+            raise ValueError(
+                "verifier_block_size must be 128 for the Ascend SFA backend"
+            )
     if "verifier_gpu_memory_utilization" in config:
         utilization = config["verifier_gpu_memory_utilization"]
         if not isinstance(utilization, str):

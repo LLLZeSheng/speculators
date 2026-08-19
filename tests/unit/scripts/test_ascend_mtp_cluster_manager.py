@@ -96,6 +96,7 @@ def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
     )
     assert "nuoya-first5-long1-8k}" in result.stdout
     assert "VERIFIER_MAX_MODEL_LEN=${VERIFIER_MAX_MODEL_LEN:-8193}" in result.stdout
+    assert "VERIFIER_BLOCK_SIZE=${VERIFIER_BLOCK_SIZE:-128}" in result.stdout
     assert (
         "VERIFIER_MAX_BATCHED_TOKENS=${VERIFIER_MAX_BATCHED_TOKENS:-8208}"
         in result.stdout

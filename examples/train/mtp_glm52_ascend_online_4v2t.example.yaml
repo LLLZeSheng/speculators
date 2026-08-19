@@ -46,6 +46,7 @@ dashboard_auto_start: true
 verifier_port: 8077
 verifier_dp_size: 1
 verifier_tp_size: 16
+verifier_block_size: 128
 verifier_max_model_len: 32769
 verifier_max_num_seqs: 1
 # TP16 sequence parallel pads 32769 to the next multiple of 16.
