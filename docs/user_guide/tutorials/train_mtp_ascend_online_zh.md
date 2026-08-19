@@ -315,11 +315,25 @@ cp examples/train/mtp_glm52_ascend_online_4v4t_4k.example.yaml \
 
 ```yaml
 verifier_max_model_len: 4097
-verifier_max_batched_tokens: 4112
+verifier_max_num_seqs: 4
+verifier_max_batched_tokens: 8224
 total_seq_len: 4096
 smoke_seq_len: 4096
 mtp_logits_chunk_size: 256
+mtp_activation_checkpointing: true
 ```
+
+这里不是只靠缩短序列省显存：完整 `lm_head` 会作为独立 FSDP 分组在使用后
+重新分片，三步 MTP 的所有 logits chunk 共用一次 head 生命周期；MTP 层激活在
+反向时重算。启动日志中的 `FSDP group: ... size_gib=...` 会显示每个 all-gather
+分组的真实大小，便于区分参数峰值与序列激活峰值。
+
+在线训练会保留 YAML 中的全部 verifier endpoint。每个 DataLoader worker 在完成
+一个样本后轮转到下一 endpoint；连接失败时本次请求直接切换下一台，不再把某个
+local rank 永久绑定到一台 verifier。4K 模板允许最多四个短 prompt，但 token
+budget 把完整 4K prompt 限制为同时两个；继续提高 token budget 前应先检查 NPU
+峰值和共享存储吞吐。每个完成样本还会输出 `VERIFIER_REQUEST`，分别记录服务请求
+与共享文件读取耗时，从而直接判断慢在 verifier 计算还是 NFS。
 
 从 8K 切换到上述 4K verifier 限制后，必须重启 verifier；仅修改 trainer 的
 `total_seq_len` 而继续使用 8K verifier 限制时则无需重启。完整切换命令：

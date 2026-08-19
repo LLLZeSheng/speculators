@@ -34,6 +34,7 @@ class DraftVocabMixin(nn.Module):
     lm_head: nn.Linear
     verifier_lm_head: nn.Linear
     uses_verifier_lm_head: ClassVar[bool] = True
+    lm_head_class: ClassVar[type[nn.Linear]] = nn.Linear
 
     def _init_vocab(self, config):
         """Initialize vocab mappings, token embeddings, and LM heads.
@@ -64,7 +65,9 @@ class DraftVocabMixin(nn.Module):
         self.embed_tokens.weight.requires_grad_(False)
 
         # LM HEADS
-        self.lm_head = nn.Linear(self.hidden_size, self.draft_vocab_size, bias=False)
+        self.lm_head = self.lm_head_class(
+            self.hidden_size, self.draft_vocab_size, bias=False
+        )
         if self.uses_verifier_lm_head:
             self.verifier_lm_head = nn.Linear(
                 self.hidden_size, self.draft_vocab_size, bias=False

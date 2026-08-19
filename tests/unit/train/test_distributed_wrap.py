@@ -41,16 +41,16 @@ def test_memory_efficient_wraps_large_children_before_layer_and_root():
 
     assert model.layers[0].large_projection in calls
     assert model.embed_tokens in calls
-    assert model.lm_head not in calls
+    assert model.lm_head in calls
     assert model.layers[0].small_projection not in calls
-    assert not isinstance(model.lm_head.weight, nn.Parameter)
-    assert model.lm_head.get_buffer("weight") is model.lm_head.weight
-    assert "lm_head.weight" not in dict(model.named_parameters())
+    assert isinstance(model.lm_head.weight, nn.Parameter)
+    assert "lm_head.weight" in dict(model.named_parameters())
     assert "lm_head.weight" in model.state_dict()
     assert calls.index(model.layers[0].large_projection) < calls.index(
         model.layers[0]
     )
     assert calls.index(model.layers[0]) < calls.index(model)
+    assert calls.index(model.lm_head) < calls.index(model)
 
 
 def test_layer_wrap_policy_preserves_original_granularity():
@@ -63,5 +63,5 @@ def test_layer_wrap_policy_preserves_original_granularity():
     ):
         apply_fully_sharded(model, wrap_policy="layer")
 
-    assert calls == [model.layers[0], model]
-    assert model.lm_head.get_buffer("weight") is model.lm_head.weight
+    assert calls == [model.lm_head, model.layers[0], model]
+    assert isinstance(model.lm_head.weight, nn.Parameter)

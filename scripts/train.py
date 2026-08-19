@@ -1,7 +1,6 @@
 import argparse
 import gc
 import logging
-import os
 import random
 import warnings
 from copy import deepcopy
@@ -56,29 +55,6 @@ def resolve_generation_model_name(
 ) -> str:
     """Resolve the model ID expected from the online hidden-state service."""
     return generation_model_name_or_path or verifier_name_or_path
-
-
-def resolve_rank_vllm_endpoint(endpoint: str) -> str:
-    """Select one endpoint per local rank from a comma-separated endpoint list.
-
-    A single endpoint is returned unchanged, preserving all existing launchers.
-    Multiple endpoints let a trainer host spread its local workers over multiple
-    verifier hosts without changing the dataset or distributed training layout.
-    """
-    endpoints = [item.strip() for item in endpoint.split(",") if item.strip()]
-    if not endpoints:
-        raise ValueError("vllm_endpoint must contain at least one endpoint")
-    if len(endpoints) == 1:
-        return endpoints[0]
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    selected = endpoints[local_rank % len(endpoints)]
-    logger.info(
-        "Selected verifier endpoint %s for LOCAL_RANK=%d from %d endpoints",
-        selected,
-        local_rank,
-        len(endpoints),
-    )
-    return selected
 
 
 def set_seed(seed: int, deterministic: bool = False):
@@ -583,7 +559,16 @@ def main(cfg: TrainConfig):  # noqa: C901
 
     # Setup distributed training
     maybe_setup_distributed()
-    args.vllm_endpoint = resolve_rank_vllm_endpoint(args.vllm_endpoint)
+    verifier_endpoints = [
+        item.strip() for item in args.vllm_endpoint.split(",") if item.strip()
+    ]
+    if not verifier_endpoints:
+        raise ValueError("vllm_endpoint must contain at least one endpoint")
+    logger.info(
+        "Using dynamic verifier endpoint pool with %d endpoint(s): %s",
+        len(verifier_endpoints),
+        ", ".join(verifier_endpoints),
+    )
 
     if args.fsdp_shard and not is_distributed():
         raise ValueError(
@@ -601,12 +586,11 @@ def main(cfg: TrainConfig):  # noqa: C901
                 "same complete --from-pretrained checkpoint"
             )
     if args.fsdp_shard and args.mtp_activation_checkpointing:
-        logger.warning(
-            "Disabling MTP activation checkpointing with FSDP2: direct nested-module "
-            "checkpoint recomputation is not DTensor-safe. Logits chunking remains "
-            "enabled."
+        logger.info(
+            "MTP activation checkpointing enabled with FSDP2. Transformer "
+            "activations will be recomputed during backward; the chunked frozen "
+            "vocabulary head uses one independent FSDP lifecycle."
         )
-        args.mtp_activation_checkpointing = False
 
     # Install partial-neox rotary patch if not using full-head hack
     if not args.draft_mrope_full_head_hack:

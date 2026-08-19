@@ -27,6 +27,58 @@ __all__ = ["MTPDraftModel", "compute_step_weights"]
 _IGNORE_INDEX = -100
 
 
+class _ChunkedVocabularyHead(nn.Linear):
+    """Project all MTP steps through one FSDP module invocation.
+
+    FSDP2 may reshard a module after its backward hook. Calling a sharded
+    ``lm_head`` once per logits chunk therefore lets checkpoint recomputation
+    observe a DTensor weight after earlier chunks have completed. Keeping every
+    step and chunk inside this single module boundary gives FSDP one coherent
+    forward/backward lifecycle while still avoiding full-sequence logits.
+    """
+
+    def forward(  # type: ignore[override]
+        self,
+        hidden_states: torch.Tensor | tuple[torch.Tensor, ...],
+        *,
+        targets: tuple[torch.Tensor, ...] | None = None,
+        chunk_size: int | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if targets is None:
+            if not isinstance(hidden_states, torch.Tensor):
+                raise TypeError("ordinary vocabulary projection requires a tensor")
+            return nn.functional.linear(hidden_states, self.weight, self.bias)
+
+        if isinstance(hidden_states, torch.Tensor) or chunk_size is None:
+            raise TypeError("chunked vocabulary projection requires tensor tuples")
+        if len(hidden_states) != len(targets):
+            raise ValueError("hidden-state and target step counts must match")
+
+        step_losses: list[torch.Tensor] = []
+        step_predictions: list[torch.Tensor] = []
+        for step_hidden, step_targets in zip(hidden_states, targets, strict=True):
+            loss_sum = torch.zeros(
+                (), device=step_hidden.device, dtype=torch.float32
+            )
+            predictions: list[torch.Tensor] = []
+            for chunk_start in range(0, step_hidden.shape[1], chunk_size):
+                chunk_end = min(chunk_start + chunk_size, step_hidden.shape[1])
+                chunk_logits = nn.functional.linear(
+                    step_hidden[:, chunk_start:chunk_end], self.weight, self.bias
+                )
+                loss_sum = loss_sum + nn.functional.cross_entropy(
+                    chunk_logits.permute(0, 2, 1),
+                    step_targets[:, chunk_start:chunk_end],
+                    ignore_index=_IGNORE_INDEX,
+                    reduction="sum",
+                ).float()
+                predictions.append(chunk_logits.detach().argmax(dim=-1))
+            step_losses.append(loss_sum)
+            step_predictions.append(torch.cat(predictions, dim=1))
+
+        return torch.stack(step_losses), torch.stack(step_predictions)
+
+
 def compute_step_weights(beta: float = 0.6, num_steps: int = 3) -> list[float]:
     """Compute normalized exponential-decay step weights.
 
@@ -55,6 +107,7 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
 
     config_class: ClassVar[type[MTPSpeculatorConfig]] = MTPSpeculatorConfig  # type: ignore[misc]
     uses_verifier_lm_head: ClassVar[bool] = False
+    lm_head_class: ClassVar[type[nn.Linear]] = _ChunkedVocabularyHead
     _keys_to_ignore_on_save: ClassVar[list[str]] = [  # type: ignore[misc,assignment]
         "embed_tokens.weight",
         "lm_head.weight",
@@ -224,6 +277,48 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         accepted_draft_tokens = torch.zeros((), dtype=torch.float32, device=device)
         anchor_total = torch.zeros((), dtype=torch.float32, device=device)
         prefix_correct: torch.Tensor | None = None
+        pending_chunked_steps: list[
+            tuple[int, torch.Tensor, torch.Tensor, float, torch.Tensor]
+        ] = []
+
+        def record_step(
+            step: int,
+            loss_sum: torch.Tensor,
+            predictions: torch.Tensor,
+            step_targets: torch.Tensor,
+            weight: float,
+            valid_count: torch.Tensor,
+        ) -> None:
+            nonlocal total_loss, full_correct, full_total
+            nonlocal accepted_draft_tokens, anchor_total, prefix_correct
+
+            step_loss = weight * loss_sum / valid_count.clamp(min=1)
+            total_loss = total_loss + step_loss
+            metrics[f"loss_step_{step}"] = step_loss.detach().clone()
+
+            with torch.no_grad():
+                valid_targets = step_targets != _IGNORE_INDEX
+                correct = predictions.eq(step_targets) & valid_targets
+                correct_count = correct.float().sum()
+                valid_count_float = valid_count.float()
+
+                metrics[f"position_{step}_acc_sum"] = correct_count
+                metrics[f"position_{step}_acc_total"] = valid_count_float
+                full_correct = full_correct + correct_count
+                full_total = full_total + valid_count_float
+
+                if prefix_correct is None:
+                    conditional_total = valid_count_float
+                    prefix_correct = correct
+                    anchor_total = valid_count_float
+                else:
+                    conditional_total = (prefix_correct & valid_targets).float().sum()
+                    prefix_correct = prefix_correct & correct
+
+                prefix_correct_count = prefix_correct.float().sum()
+                metrics[f"conditional_position_{step}_acc_sum"] = prefix_correct_count
+                metrics[f"conditional_position_{step}_acc_total"] = conditional_total
+                accepted_draft_tokens = accepted_draft_tokens + prefix_correct_count
 
         # Uniform valid_len keeps tensor shapes identical across loop
         # iterations, which torch.compile requires for stable codegen.
@@ -303,72 +398,55 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 )
                 loss_sum = unreduced.float().sum()
                 predictions = logits.detach().argmax(dim=-1)
+                record_step(
+                    step, loss_sum, predictions, step_targets, weight, valid_count
+                )
             else:
-                loss_sum = torch.zeros((), device=device, dtype=torch.float32)
-                prediction_chunks: list[torch.Tensor] = []
-
-                for chunk_start in range(0, valid_len, chunk_size):
-                    chunk_end = min(chunk_start + chunk_size, valid_len)
-                    hidden_chunk = mtp_output[:, chunk_start:chunk_end]
-                    target_chunk = step_targets[:, chunk_start:chunk_end]
-
-                    def project_chunk(
-                        chunk_hidden: torch.Tensor, chunk_targets: torch.Tensor
-                    ) -> tuple[torch.Tensor, torch.Tensor]:
-                        chunk_logits = self.lm_head(chunk_hidden)
-                        chunk_loss = nn.functional.cross_entropy(
-                            chunk_logits.permute(0, 2, 1),
-                            chunk_targets,
-                            ignore_index=_IGNORE_INDEX,
-                            reduction="sum",
-                        )
-                        return chunk_loss.float(), chunk_logits.detach().argmax(dim=-1)
-
-                    if self.training and torch.is_grad_enabled():
-                        chunk_loss, chunk_predictions = checkpoint(
-                            project_chunk,
-                            hidden_chunk,
-                            target_chunk,
-                            use_reentrant=False,
-                        )
-                    else:
-                        chunk_loss, chunk_predictions = project_chunk(
-                            hidden_chunk, target_chunk
-                        )
-                    loss_sum = loss_sum + chunk_loss
-                    prediction_chunks.append(chunk_predictions)
-
-                predictions = torch.cat(prediction_chunks, dim=1)
-
-            step_loss = weight * loss_sum / valid_count.clamp(min=1)
-            total_loss = total_loss + step_loss
-            metrics[f"loss_step_{step}"] = step_loss.detach().clone()
-
-            with torch.no_grad():
-                valid_targets = step_targets != _IGNORE_INDEX
-                correct = predictions.eq(step_targets) & valid_targets
-                correct_count = correct.float().sum()
-                valid_count_float = valid_count.float()
-
-                metrics[f"position_{step}_acc_sum"] = correct_count
-                metrics[f"position_{step}_acc_total"] = valid_count_float
-                full_correct = full_correct + correct_count
-                full_total = full_total + valid_count_float
-
-                if prefix_correct is None:
-                    conditional_total = valid_count_float
-                    prefix_correct = correct
-                    anchor_total = valid_count_float
-                else:
-                    conditional_total = (prefix_correct & valid_targets).float().sum()
-                    prefix_correct = prefix_correct & correct
-
-                prefix_correct_count = prefix_correct.float().sum()
-                metrics[f"conditional_position_{step}_acc_sum"] = prefix_correct_count
-                metrics[f"conditional_position_{step}_acc_total"] = conditional_total
-                accepted_draft_tokens = accepted_draft_tokens + prefix_correct_count
+                pending_chunked_steps.append(
+                    (step, mtp_output, step_targets, weight, valid_count)
+                )
 
             current_hidden = mtp_output
+
+        if pending_chunked_steps:
+            chunk_size = logits_chunk_size
+            if chunk_size is None:
+                raise AssertionError("chunked steps require logits_chunk_size")
+            step_hidden_states = tuple(item[1] for item in pending_chunked_steps)
+            step_targets = tuple(item[2] for item in pending_chunked_steps)
+
+            def project_all_steps(
+                *hidden_steps: torch.Tensor,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                output = self.lm_head(
+                    hidden_steps,
+                    targets=step_targets,
+                    chunk_size=chunk_size,
+                )
+                if not isinstance(output, tuple):
+                    raise TypeError("chunked vocabulary head returned logits")
+                return output
+
+            if self.training and torch.is_grad_enabled():
+                loss_sums, predictions = checkpoint(
+                    project_all_steps,
+                    *step_hidden_states,
+                    use_reentrant=False,
+                )
+            else:
+                loss_sums, predictions = project_all_steps(*step_hidden_states)
+
+            for index, (step, _, targets, weight, valid_count) in enumerate(
+                pending_chunked_steps
+            ):
+                record_step(
+                    step,
+                    loss_sums[index],
+                    predictions[index],
+                    targets,
+                    weight,
+                    valid_count,
+                )
 
         metrics["full_acc_sum"] = full_correct
         metrics["full_acc_total"] = full_total

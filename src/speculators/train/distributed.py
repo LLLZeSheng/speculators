@@ -218,37 +218,43 @@ def apply_fully_sharded(
         raise ValueError(f"min_numel must be positive, got {min_numel}")
 
     wrapped: set[int] = set()
+    managed_parameters: set[int] = set()
 
-    def shard(module: torch.nn.Module) -> None:
+    def shard(module: torch.nn.Module, name: str) -> None:
         module_id = id(module)
         if module_id in wrapped:
             return
+        group_parameters = [
+            parameter
+            for parameter in module.parameters()
+            if id(parameter) not in managed_parameters
+        ]
+        group_bytes = sum(
+            parameter.numel() * parameter.element_size()
+            for parameter in group_parameters
+        )
+        logger.info(
+            "FSDP group: module=%s tensors=%d parameters=%d size_gib=%.2f",
+            name,
+            len(group_parameters),
+            sum(parameter.numel() for parameter in group_parameters),
+            group_bytes / 1024**3,
+        )
         fully_shard(module, mp_policy=mp_policy)
+        managed_parameters.update(map(id, group_parameters))
         wrapped.add(module_id)
 
-    # MTP computes its frozen vocabulary projection in multiple independent
-    # non-reentrant checkpoints. FSDP2 converts managed parameters back to
-    # DTensor after each backward invocation. Consequently, even a child group
-    # with reshard_after_forward=False becomes sharded after one chunk and the
-    # next checkpoint recomputation mixes a Tensor input with a DTensor weight.
-    #
-    # A frozen projection is model state but not an optimizable parameter.
-    # Registering its weight as a persistent buffer preserves the public
-    # ``lm_head.weight`` attribute and state-dict key while keeping it outside
-    # every FSDP parameter group. Root FSDP still moves buffers to the compute
-    # device, and F.linear consistently receives two ordinary tensors.
+    # MTP's chunked vocabulary head deliberately performs every step/chunk in
+    # one module invocation, so it can be a normal resharding FSDP group. This
+    # avoids both mixed Tensor/DTensor checkpoint recomputation and a complete
+    # frozen vocabulary matrix remaining resident on every accelerator.
     lm_head = getattr(model, "lm_head", None)
     if isinstance(lm_head, torch.nn.Module):
         frozen_weight = lm_head._parameters.get("weight")  # noqa: SLF001
     else:
         frozen_weight = None
     if frozen_weight is not None and not frozen_weight.requires_grad:
-        logger.info(
-            "FSDP checkpoint-safe frozen buffer: module=lm_head parameters=%d",
-            frozen_weight.numel(),
-        )
-        del lm_head._parameters["weight"]  # noqa: SLF001
-        lm_head.register_buffer("weight", frozen_weight.detach(), persistent=True)
+        shard(lm_head, "lm_head")
 
     if wrap_policy == "memory_efficient":
         # FSDP all-gathers one wrapping unit at a time. GLM-MoE layers contain
@@ -280,11 +286,11 @@ def apply_fully_sharded(
                 name,
                 direct_numel,
             )
-            shard(module)
+            shard(module, name)
 
-    for layer in model.layers:  # type: ignore[union-attr]
-        shard(layer)
+    for layer_index, layer in enumerate(model.layers):  # type: ignore[union-attr]
+        shard(layer, f"layers.{layer_index}")
 
-    shard(model)
+    shard(model, "root")
 
     return model

@@ -712,3 +712,33 @@ def test_arrow_dataset_can_raise_online_generation_errors(tmp_path: Path, monkey
 
     with pytest.raises(RuntimeError, match="vLLM failed"):
         dataset[0]
+
+
+def test_arrow_dataset_rotates_and_fails_over_verifier_endpoints(
+    tmp_path: Path, monkeypatch
+):
+    transfer = Mock()
+    transfer.get_generated.return_value = {
+        "token_ids": torch.tensor([1, 2, 3, 4]),
+        "hidden_states": torch.zeros(4, 2, 3),
+    }
+    dataset = _online_arrow_dataset(
+        tmp_path,
+        transfer=transfer,
+        vllm_endpoint="http://verifier-a/v1,http://verifier-b/v1",
+        max_retries=1,
+    )
+    client_a, client_b = Mock(), Mock()
+    clients = {
+        "http://verifier-a/v1": (client_a, "verifier"),
+        "http://verifier-b/v1": (client_b, "verifier"),
+    }
+    monkeypatch.setattr(dataset, "_client_for_endpoint", clients.__getitem__)
+    generate = Mock(side_effect=[RuntimeError("down"), "handle"])
+    monkeypatch.setattr("speculators.train.data.generate_hidden_states", generate)
+
+    result = dataset._maybe_generate_hs(0)
+
+    assert result is not None
+    assert [call.args[0] for call in generate.call_args_list] == [client_a, client_b]
+    assert all(call.kwargs["max_retries"] == 0 for call in generate.call_args_list)

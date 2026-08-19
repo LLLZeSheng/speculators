@@ -49,8 +49,11 @@ verifier_block_size: 128
 # 4096 prompt tokens plus one generated token; TP16 pads the scheduler budget
 # to the next multiple of 16.
 verifier_max_model_len: 4097
-verifier_max_num_seqs: 1
-verifier_max_batched_tokens: 4112
+# Up to four short prompts, while the token budget caps full 4K concurrency at
+# two. Hidden-state export is bandwidth-heavy, so raise the token budget only
+# after confirming NPU memory and shared-storage I/O.
+verifier_max_num_seqs: 4
+verifier_max_batched_tokens: 8224
 verifier_gpu_memory_utilization: 0.90
 total_seq_len: 4096
 smoke_seq_len: 4096
@@ -64,7 +67,7 @@ fsdp_skip_initial_broadcast: true
 fsdp_wrap_policy: memory_efficient
 fsdp_min_numel: 8000000
 mtp_logits_chunk_size: 256
-mtp_activation_checkpointing: false
+mtp_activation_checkpointing: true
 startup_heartbeat_seconds: 30
 trainer_mode: smoke
 trainer_data_mode: online-cache

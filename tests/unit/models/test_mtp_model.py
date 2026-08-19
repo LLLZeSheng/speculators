@@ -1,6 +1,7 @@
 """Unit tests for MTPDraftModel forward pass."""
 
 import math
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -129,6 +130,31 @@ def test_memory_efficient_forward_supports_backward(mtp_model, seed):
         for parameter in mtp_model.mtp_layers.parameters()
         if parameter.requires_grad
     )
+
+
+def test_memory_efficient_head_has_one_fsdp_lifecycle(mtp_model, seed):
+    """All steps/chunks share one head call (plus one checkpoint recompute)."""
+    hidden_size = mtp_model.config.hidden_size
+    vocab_size = mtp_model.config.vocab_size
+    input_ids = torch.randint(0, vocab_size, (BATCH, SEQ_LEN))
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+    mtp_model.train()
+
+    with patch.object(
+        mtp_model.lm_head,
+        "forward",
+        wraps=mtp_model.lm_head.forward,
+    ) as projection:
+        _, loss, _ = mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+            logits_chunk_size=2,
+            return_logits=False,
+        )
+        loss.backward()
+
+    assert projection.call_count == 2
+    assert all(isinstance(call.args[0], tuple) for call in projection.call_args_list)
 
 
 def test_forward_reports_greedy_prefix_acceptance_metrics(mtp_model, seed):

@@ -1,7 +1,9 @@
 import json
+import logging
 import math
 import os
 import random
+import time
 import warnings
 from collections.abc import Callable
 from os import PathLike
@@ -24,6 +26,7 @@ from speculators.data_generation.vllm_client import (
 from speculators.train.noise_transforms import TransformTensors
 
 BatchType = dict[str, Any]
+logger = logging.getLogger(__name__)
 
 
 def list_files(path):
@@ -258,9 +261,20 @@ class ArrowDataset(BaseDataset):
 
         self.transfer = transfer or FileTransfer(Path(datapath) / "hidden_states")
         self.vllm_endpoint = vllm_endpoint
+        self.vllm_endpoints = [
+            item.strip() for item in vllm_endpoint.split(",") if item.strip()
+        ]
+        if not self.vllm_endpoints:
+            raise ValueError("vllm_endpoint must contain at least one endpoint")
         self.on_missing = on_missing
         self.on_generate = on_generate
         self.client: openai.OpenAI | None = None
+        self._clients: dict[str, openai.OpenAI] = {}
+        self._endpoint_models: dict[str, str] = {}
+        self._endpoint_cursor = int(os.environ.get("RANK", "0")) % len(
+            self.vllm_endpoints
+        )
+        self._transfer_ready = False
         self.model = model
         self.request_timeout = request_timeout
         self.max_retries = max_retries
@@ -276,20 +290,42 @@ class ArrowDataset(BaseDataset):
             return self._source_file_indices[index]
         return index + self.start_file_idx
 
-    def _setup_client(self):
-        self.client = openai.OpenAI(
-            base_url=self.vllm_endpoint, api_key="EMPTY", max_retries=0
-        )
-        list_models = self.client.models.list()
+    def _client_for_endpoint(self, endpoint: str) -> tuple[openai.OpenAI, str]:
+        client = self._clients.get(endpoint)
+        if client is None:
+            client = openai.OpenAI(base_url=endpoint, api_key="EMPTY", max_retries=0)
+            self._clients[endpoint] = client
+        model_id = self._endpoint_models.get(endpoint)
+        if model_id is not None:
+            return client, model_id
+
+        list_models = client.models.list()
         model_id = list_models.data[0].id
         if self.model and self.model != model_id:
             raise ValueError(
                 f"An explicit model name was passed ({self.model}) which doesn't match"
-                f" found model_id {model_id}."
+                f" found model_id {model_id} at {endpoint}."
                 "Please make sure --endpoint is set to the correct vllm instance."
             )
         self.model = model_id
-        self.transfer.setup()
+        self._endpoint_models[endpoint] = model_id
+        return client, model_id
+
+    def _next_endpoint(self) -> str:
+        # Each DataLoader worker owns its dataset copy, so no inter-thread lock
+        # is required (and avoiding one keeps the dataset spawn-picklable).
+        endpoint = self.vllm_endpoints[self._endpoint_cursor]
+        self._endpoint_cursor = (self._endpoint_cursor + 1) % len(
+            self.vllm_endpoints
+        )
+        return endpoint
+
+    def _setup_client(self):
+        endpoint = self._next_endpoint()
+        self.client, _ = self._client_for_endpoint(endpoint)
+        if not self._transfer_ready:
+            self.transfer.setup()
+            self._transfer_ready = True
 
     def _get_generation_item(self, index: int) -> dict:
         dataset_item = dict(self.data[index])
@@ -336,25 +372,71 @@ class ArrowDataset(BaseDataset):
         return list(self.data.with_format(None)["seq_len"])
 
     def _maybe_generate_hs(self, index: int) -> dict[str, torch.Tensor] | None:
-        if not self.client:
-            self._setup_client()
+        injected_client = self.client is not None and not self._clients
+        if not self._transfer_ready:
+            self.transfer.setup()
+            self._transfer_ready = True
 
         handle: str | None = None
 
         try:
             dataset_item = self._get_generation_item(index)
             client_item = build_client_item(dataset_item)
-            handle = generate_hidden_states(
-                self.client,  # type:ignore[arg-type]
-                self.model,  # type:ignore[arg-type]
-                client_item,
-                timeout=self.request_timeout,
-                max_retries=self.max_retries,
-            )
+            if injected_client:
+                handle = generate_hidden_states(
+                    self.client,  # type: ignore[arg-type]
+                    self.model,  # type: ignore[arg-type]
+                    client_item,
+                    timeout=self.request_timeout,
+                    max_retries=self.max_retries,
+                )
+            else:
+                total_attempts = self.max_retries + 1
+                last_error: Exception | None = None
+                for attempt in range(1, total_attempts + 1):
+                    endpoint = self._next_endpoint()
+                    request_started = time.monotonic()
+                    try:
+                        client, model_id = self._client_for_endpoint(endpoint)
+                        self.client = client
+                        handle = generate_hidden_states(
+                            client,
+                            model_id,
+                            client_item,
+                            timeout=self.request_timeout,
+                            # Fail over to another verifier instead of retrying the
+                            # same dead or overloaded endpoint in the client helper.
+                            max_retries=0,
+                        )
+                        request_seconds = time.monotonic() - request_started
+                        break
+                    except Exception as error:  # noqa: BLE001 - endpoint failover
+                        last_error = error
+                        warnings.warn(
+                            f"Verifier request failed at {endpoint} "
+                            f"(attempt {attempt}/{total_attempts}): {error}",
+                            stacklevel=1,
+                        )
+                else:
+                    if last_error is None:
+                        raise RuntimeError("verifier endpoint pool made no attempts")
+                    raise last_error
 
+            load_started = time.monotonic()
             loaded_hs = self.transfer.get_generated(handle)
+            load_seconds = time.monotonic() - load_started
             if loaded_hs is None:
                 raise ValueError(f"Failed to load hidden states for handle {handle}")
+
+            logger.info(
+                "VERIFIER_REQUEST endpoint=%s sample=%d tokens=%d "
+                "request_seconds=%.1f shared_load_seconds=%.1f",
+                endpoint if not injected_client else self.vllm_endpoint,
+                index,
+                len(client_item["input_ids"]),
+                request_seconds if not injected_client else -1.0,
+                load_seconds,
+            )
 
             check_hidden_states(loaded_hs, _as_token_list(dataset_item["input_ids"]))
 
