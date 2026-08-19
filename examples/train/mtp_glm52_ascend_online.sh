@@ -116,9 +116,10 @@ export SPECULATORS_STARTUP_HEARTBEAT_SECONDS=${STARTUP_HEARTBEAT_SECONDS:-30}
 FSDP_SKIP_INITIAL_BROADCAST=${FSDP_SKIP_INITIAL_BROADCAST:-1}
 FSDP_WRAP_POLICY=${FSDP_WRAP_POLICY:-memory_efficient}
 FSDP_MIN_NUMEL=${FSDP_MIN_NUMEL:-8000000}
+FSDP_EXPERTS_PER_UNIT=${FSDP_EXPERTS_PER_UNIT:-8}
 MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-1024}
-# Direct torch.utils.checkpoint around nested FSDP2 modules is not enabled by
-# default: FSDP-aware checkpoint wrapping is required before this can be safe.
+# Keep checkpointing opt-in for generic profiles; the 4K/8K GLM templates
+# enable the tested non-reentrant MTP checkpoint path explicitly.
 MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-0}
 
 fail() {
@@ -176,6 +177,8 @@ validate_role() {
     [[ $FSDP_WRAP_POLICY == layer || $FSDP_WRAP_POLICY == memory_efficient ]] || \
         fail "FSDP_WRAP_POLICY must be layer or memory_efficient"
     [[ $FSDP_MIN_NUMEL =~ ^[1-9][0-9]*$ ]] || fail "FSDP_MIN_NUMEL must be positive"
+    [[ $FSDP_EXPERTS_PER_UNIT =~ ^[1-9][0-9]*$ ]] || \
+        fail "FSDP_EXPERTS_PER_UNIT must be positive"
     [[ $MTP_LOGITS_CHUNK_SIZE =~ ^[1-9][0-9]*$ ]] || \
         fail "MTP_LOGITS_CHUNK_SIZE must be positive"
     [[ $MTP_ACTIVATION_CHECKPOINTING == 0 || $MTP_ACTIVATION_CHECKPOINTING == 1 ]] || \
@@ -288,6 +291,7 @@ Resolved Ascend MTP3 configuration:
   ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
   TRAINER_DATA_MODE=$TRAINER_DATA_MODE
   FSDP_WRAP_POLICY=$FSDP_WRAP_POLICY FSDP_MIN_NUMEL=$FSDP_MIN_NUMEL
+  FSDP_EXPERTS_PER_UNIT=$FSDP_EXPERTS_PER_UNIT
   MTP_LOGITS_CHUNK_SIZE=$MTP_LOGITS_CHUNK_SIZE MTP_ACTIVATION_CHECKPOINTING=$MTP_ACTIVATION_CHECKPOINTING
   OFFLINE_COLLECTION_CONCURRENCY=$OFFLINE_COLLECTION_CONCURRENCY
   OFFLINE_COLLECTION_MAX_SAMPLES=$OFFLINE_COLLECTION_MAX_SAMPLES
@@ -722,6 +726,7 @@ run_trainer() {
         --fsdp-shard
         --fsdp-wrap-policy "$FSDP_WRAP_POLICY"
         --fsdp-min-numel "$FSDP_MIN_NUMEL"
+        --fsdp-experts-per-unit "$FSDP_EXPERTS_PER_UNIT"
     )
     if [[ $MTP_ACTIVATION_CHECKPOINTING == 1 ]]; then
         cmd+=(--mtp-activation-checkpointing)

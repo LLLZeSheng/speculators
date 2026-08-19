@@ -136,6 +136,7 @@ class TrainerConfig(NamedTuple):
     fsdp_skip_initial_broadcast: bool = False
     fsdp_wrap_policy: Literal["layer", "memory_efficient"] = "layer"
     fsdp_min_numel: int = 8_000_000
+    fsdp_experts_per_unit: int = 8
     max_steps: int | None = None
 
 
@@ -428,6 +429,7 @@ class Trainer:
                 param_dtype=self.config.hidden_states_dtype,
                 wrap_policy=self.config.fsdp_wrap_policy,
                 min_numel=self.config.fsdp_min_numel,
+                experts_per_unit=self.config.fsdp_experts_per_unit,
             )
 
         if load_checkpoint:

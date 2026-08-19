@@ -63,6 +63,7 @@ epochs: 5
 fsdp_skip_initial_broadcast: true
 fsdp_wrap_policy: memory_efficient
 fsdp_min_numel: 8000000
+fsdp_experts_per_unit: 8
 mtp_logits_chunk_size: 1024
 mtp_activation_checkpointing: false
 startup_heartbeat_seconds: 30

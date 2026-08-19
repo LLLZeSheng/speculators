@@ -16,6 +16,8 @@ import torch.distributed as dist
 from torch.distributed import ProcessGroup
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
+from speculators.train.glm_moe_experts import chunk_glm_moe_experts
+
 logger = logging.getLogger("speculators")
 
 # ---------------------------------------------------------------------------
@@ -200,6 +202,7 @@ def apply_fully_sharded(
     param_dtype: torch.dtype = torch.bfloat16,
     wrap_policy: Literal["layer", "memory_efficient"] = "layer",
     min_numel: int = 8_000_000,
+    experts_per_unit: int = 8,
 ):
     """Applies torch FSDP fully_shard to the model, wrapping layers in FSDPModule.
 
@@ -211,6 +214,13 @@ def apply_fully_sharded(
         raise ValueError(f"Unsupported FSDP wrap policy: {wrap_policy}")
     if min_numel <= 0:
         raise ValueError(f"min_numel must be positive, got {min_numel}")
+    if experts_per_unit <= 0:
+        raise ValueError(
+            f"experts_per_unit must be positive, got {experts_per_unit}"
+        )
+
+    if wrap_policy == "memory_efficient":
+        chunk_glm_moe_experts(model, experts_per_unit)
 
     reduce_dtype = param_dtype if wrap_policy == "memory_efficient" else torch.float32
     mp_policy = MixedPrecisionPolicy(
@@ -235,10 +245,23 @@ def apply_fully_sharded(
         module_id = id(module)
         if module_id in wrapped:
             return
+        # Parameters of an already wrapped child are managed by that child's
+        # FSDP state. FSDP2 replaces Parameters with DTensors, so identity-based
+        # filtering alone becomes stale after wrapping; exclude child subtrees
+        # structurally to keep the grouping log accurate.
+        wrapped_child_prefixes = [
+            f"{child_name}."
+            for child_name, child in module.named_modules()
+            if child is not module and id(child) in wrapped
+        ]
         group_parameters = [
             parameter
-            for parameter in module.parameters()
+            for parameter_name, parameter in module.named_parameters()
             if id(parameter) not in managed_parameters
+            and not any(
+                parameter_name.startswith(prefix)
+                for prefix in wrapped_child_prefixes
+            )
         ]
         group_bytes = sum(
             parameter.numel() * parameter.element_size()

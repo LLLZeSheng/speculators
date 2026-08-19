@@ -748,6 +748,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         fsdp_skip_initial_broadcast=args.fsdp_skip_initial_broadcast,
         fsdp_wrap_policy=args.fsdp_wrap_policy,
         fsdp_min_numel=args.fsdp_min_numel,
+        fsdp_experts_per_unit=args.fsdp_experts_per_unit,
         max_steps=args.max_steps,
     )
     trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)

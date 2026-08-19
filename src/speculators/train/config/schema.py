@@ -463,6 +463,13 @@ class TrainerArgs(_Group):
         description="Minimum directly-owned parameter count for a submodule to get "
         "its own FSDP unit under --fsdp-wrap-policy memory_efficient.",
     )
+    fsdp_experts_per_unit: int = Field(
+        default=8,
+        ge=1,
+        description="Number of contiguous packed GLM routed experts per FSDP "
+        "unit under --fsdp-wrap-policy memory_efficient. Smaller values reduce "
+        "the expert all-gather peak at the cost of more collectives.",
+    )
     max_steps: int | None = Field(
         default=None,
         ge=1,

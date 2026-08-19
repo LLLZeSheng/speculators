@@ -319,6 +319,8 @@ verifier_max_num_seqs: 4
 verifier_max_batched_tokens: 8224
 total_seq_len: 4096
 smoke_seq_len: 4096
+fsdp_wrap_policy: memory_efficient
+fsdp_experts_per_unit: 8
 mtp_logits_chunk_size: 256
 mtp_activation_checkpointing: true
 ```
@@ -329,6 +331,13 @@ mtp_activation_checkpointing: true
 all-gather 大小，便于区分参数峰值与序列激活峰值。memory-efficient 策略还会用
 BF16 做梯度归约、禁用 backward prefetch，并让 root group 在 forward 后重新分片，
 避免 6 GiB all-gather 与上一组 FP32 梯度通信缓冲重叠。
+
+GLM routed experts 原始格式把 256 个 experts 融合进两个总计约 18 GiB 的 3-D
+Parameter。FULL_SHARD 仍需在每次计算前恢复完整 Parameter，不能仅靠 wrapper 自动
+拆分。`fsdp_experts_per_unit: 8` 会在 FSDP 前沿 expert 维度创建 32 个独立计算单元，
+保持 top-k 路由和梯度等价，同时把最大 expert all-gather 降至约 0.56 GiB。启动时
+应看到 `FSDP GLM expert chunking: ... units=32 experts_per_unit=8`，且不应再出现
+`module=mtp_layers.0.mlp.experts ... all_gather_size_gib=18.00`。
 
 在线训练会保留 YAML 中的全部 verifier endpoint。file backend 在 shared hidden
 states 目录用原子 lease 汇总每台 verifier 的在途 token 数，新请求选择 token

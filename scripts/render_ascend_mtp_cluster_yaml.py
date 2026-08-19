@@ -55,6 +55,7 @@ SCALAR_MAP = {
     "fsdp_skip_initial_broadcast": "FSDP_SKIP_INITIAL_BROADCAST",
     "fsdp_wrap_policy": "FSDP_WRAP_POLICY",
     "fsdp_min_numel": "FSDP_MIN_NUMEL",
+    "fsdp_experts_per_unit": "FSDP_EXPERTS_PER_UNIT",
     "mtp_logits_chunk_size": "MTP_LOGITS_CHUNK_SIZE",
     "mtp_activation_checkpointing": "MTP_ACTIVATION_CHECKPOINTING",
     "startup_heartbeat_seconds": "STARTUP_HEARTBEAT_SECONDS",
@@ -332,7 +333,11 @@ def validate(config: dict[str, str | list[str]]) -> None:
         "memory_efficient",
     }:
         raise ValueError("fsdp_wrap_policy must be layer or memory_efficient")
-    for key in ("fsdp_min_numel", "mtp_logits_chunk_size"):
+    for key in (
+        "fsdp_min_numel",
+        "fsdp_experts_per_unit",
+        "mtp_logits_chunk_size",
+    ):
         if key in config:
             value = config[key]
             if not isinstance(value, str) or not value.isdigit() or int(value) < 1:
