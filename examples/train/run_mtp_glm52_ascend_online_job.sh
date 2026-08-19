@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CONTAINER_REPO_PATH=${CONTAINER_REPO_PATH:-/workspace/speculators}
-LOG_ROOT=${LOG_ROOT:-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3}
+LOG_ROOT=${LOG_ROOT:-/mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3}
 CONTAINER_NAME=${CONTAINER_NAME:?CONTAINER_NAME is required}
 ROLE=${ROLE:?ROLE is required}
 INSTALL_SPECULATORS=${INSTALL_SPECULATORS:-0}

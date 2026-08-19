@@ -271,7 +271,7 @@ class ClusterMonitor:
         self.config_path = config_path
         self.config = load_flat_yaml(config_path)
         self.probe = probe
-        self.shared_root = Path(str(self.config.get("shared_root", "/kos_ulan")))
+        self.shared_root = Path(str(self.config.get("shared_root", "/mnt/xds/mtp")))
         self.orchestrator_root = self.shared_root / "spec_train/logs/orchestrator"
         self.log_root = Path(str(self.config["log_root"]))
         self.prefix = str(self.config["container_name_prefix"])

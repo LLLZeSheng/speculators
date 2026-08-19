@@ -99,7 +99,7 @@ block, and logits head received the intended checkpoint values. Run the static
 auditor inside the serving image:
 
 ```bash
-cd /kos_ulan/spec_train/speculators
+cd /mnt/xds/mtp/spec_train/speculators
 python scripts/check_glm52_mtp_mapping.py \
   /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
   --check-values \

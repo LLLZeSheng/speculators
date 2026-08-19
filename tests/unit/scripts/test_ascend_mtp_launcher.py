@@ -57,7 +57,7 @@ def test_container_wrapper_uses_requested_a3_image_and_all_devices():
 
     assert result.returncode == 0, result.stderr
     assert "quay.io/ascend/vllm-ascend:v0.23.0rc1-a3" in result.stdout
-    assert "/kos_ulan:/kos_ulan" in result.stdout
+    assert "/mnt/xds/mtp:/mnt/xds/mtp" in result.stdout
     assert "--device /dev/davinci0" in result.stdout
     assert "--device /dev/davinci15" in result.stdout
     assert "--ipc host" in result.stdout
@@ -74,7 +74,7 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "scripts/launch_vllm.py" in result.stdout
     assert "--target-layer-ids 78" in result.stdout
     assert "--hidden-states-path" in result.stdout
-    assert "/kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8" in result.stdout
+    assert "/mnt/xds/mtp/spec_train/online_hidden_states/glm52-w4a8c8" in result.stdout
     assert "--data-parallel-size 1" in result.stdout
     assert "--tensor-parallel-size 16" in result.stdout
     assert "--max-model-len 32769" in result.stdout
@@ -84,7 +84,7 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--enable-expert-parallel" in result.stdout
     assert "--required-devices 16" in result.stdout
     assert "--served-model-name glm52-w4a8c8-verifier" in result.stdout
-    assert "/kos_ulan/spec_train/metadata/glm52-w4a8c8" in result.stdout
+    assert "/mnt/xds/mtp/spec_train/metadata/glm52-w4a8c8" in result.stdout
 
 
 def test_verifier_can_still_select_compressed_tensors_normalization():
@@ -105,7 +105,7 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--nproc-per-node 16" in result.stdout
     assert "--node-rank 3" in result.stdout
     assert "--master-addr 10.0.0.20" in result.stdout
-    assert "--verifier-name-or-path /kos_ulan/models/GLM-5.2" in result.stdout
+    assert "--verifier-name-or-path /mnt/xds/mtp/models/GLM-5.2" in result.stdout
     assert "--generation-model-name-or-path glm52-w4a8c8-verifier" in result.stdout
     assert "--from-pretrained" in result.stdout
     assert "--speculator-type mtp" in result.stdout

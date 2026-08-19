@@ -7,9 +7,9 @@ export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT/hs_connectors/src:$REPO_ROOT${PYTHO
 
 PYTHON_BIN=${PYTHON_BIN:-python}
 MODEL=${MODEL:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4}
-NUOYA_SOURCE=${NUOYA_SOURCE:-/kos_ulan/lzs/spec_train/dataset/raw_conversions/average-2k-nuoya}
-LONG_SOURCE=${LONG_SOURCE:-/kos_ulan/lzs/spec_train/dataset/raw_conversions/average-8k}
-OUTPUT=${OUTPUT:-/kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k}
+NUOYA_SOURCE=${NUOYA_SOURCE:-/mnt/xds/mtp/spec_train/dataset/raw_conversions/average-2k-nuoya}
+LONG_SOURCE=${LONG_SOURCE:-/mnt/xds/mtp/spec_train/dataset/raw_conversions/average-8k}
+OUTPUT=${OUTPUT:-/mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-8k}
 NUM_PREPROCESSING_WORKERS=${NUM_PREPROCESSING_WORKERS:-8}
 SAVE_WORKERS=${SAVE_WORKERS:-8}
 

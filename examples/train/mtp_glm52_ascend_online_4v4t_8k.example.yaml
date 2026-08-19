@@ -18,25 +18,25 @@ container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
 container_mode: create
 # existing_container_name: glm52-w4a8-mg13-speculator-training
 container_name_prefix: glm52-w4a8-mg13-speculator-training
-container_repo_path: /kos_ulan/lzs/spec_train/speculators
-repo_path: /kos_ulan/lzs/spec_train/speculators
-shared_root: /kos_ulan
+container_repo_path: /mnt/xds/mtp/spec_train/speculators
+repo_path: /mnt/xds/mtp/spec_train/speculators
+shared_root: /mnt/xds/mtp
 nic_name: auto
 
 container_mounts:
   - /mnt/xds/sfs:/mnt/xds/sfs
-  - /kos_ulan:/kos_ulan
-  - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
+  - /mnt/xds/mtp:/mnt/xds/mtp
+  - /mnt/xds/mtp/spec_train/speculators:/mnt/xds/mtp/spec_train/speculators
   - /root/.cache:/root/.cache
 
 verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 verifier_quantization_mode: ascend
 mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
-data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
-hidden_states_path: /kos_ulan/lzs/spec_train/hidden_states/glm52-w4a8-mg13-online-8k
-output_path: /kos_ulan/lzs/spec_train/ckpts/glm52-w4a8-mg13-8k
-log_root: /kos_ulan/lzs/spec_train/logs/glm52-w4a8-mg13-8k
+data_path: /mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-8k
+hidden_states_path: /mnt/xds/mtp/spec_train/hidden_states/glm52-w4a8-mg13-online-8k
+output_path: /mnt/xds/mtp/spec_train/ckpts/glm52-w4a8-mg13-8k
+log_root: /mnt/xds/mtp/spec_train/logs/glm52-w4a8-mg13-8k
 
 dashboard_host: 0.0.0.0
 dashboard_port: 6007

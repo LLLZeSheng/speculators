@@ -8,8 +8,8 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 CONFIG_RENDERER=$REPO_ROOT/scripts/render_ascend_mtp_cluster_yaml.py
 DASHBOARD_SCRIPT=$REPO_ROOT/scripts/monitor_ascend_mtp_cluster.py
 
-DEFAULT_CONFIG=/kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
-DEFAULT_REPO=/kos_ulan/spec_train/speculators
+DEFAULT_CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
+DEFAULT_REPO=/mnt/xds/mtp/spec_train/speculators
 DEFAULT_CONTAINER_PREFIX=glm52-mtp3
 
 usage() {
@@ -41,7 +41,7 @@ Commands:
 
 Options:
   --config FILE    User-maintained YAML. Default:
-                   /kos_ulan/spec_train/config/glm52-mtp3-4v4t.yaml
+                   /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
   --index N        Verifier index for start-verifier.
 
 Runtime environment overrides:
@@ -116,7 +116,7 @@ load_config() {
         fail "expected zero, two, or four trainer IPs"
     CONTAINER_NAME_PREFIX=${CONTAINER_NAME_PREFIX:-$DEFAULT_CONTAINER_PREFIX}
     REMOTE_REPO_PATH=${REMOTE_REPO_PATH:-$DEFAULT_REPO}
-    SHARED_ROOT=${SHARED_ROOT:-/kos_ulan}
+    SHARED_ROOT=${SHARED_ROOT:-/mnt/xds/mtp}
     ORCHESTRATOR_LOG_ROOT=${ORCHESTRATOR_LOG_ROOT:-$SHARED_ROOT/spec_train/logs/orchestrator}
     CONTAINER_MODE=${CONTAINER_MODE:-create}
     EXISTING_CONTAINER_NAME=${EXISTING_CONTAINER_NAME:-}

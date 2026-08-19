@@ -13,11 +13,11 @@ import time
 from pathlib import Path
 
 DEFAULT_SOURCES = (
-    "/kos_ulan/lzs/spec_train/dataset/raw_conversions/average-2k-nuoya",
-    "/kos_ulan/lzs/spec_train/dataset/raw_conversions/average-8k",
+    "/mnt/xds/mtp/spec_train/dataset/raw_conversions/average-2k-nuoya",
+    "/mnt/xds/mtp/spec_train/dataset/raw_conversions/average-8k",
 )
 DEFAULT_OUTPUT = (
-    "/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k"
+    "/mnt/xds/mtp/spec_train/dataset/hf/nuoya-average2k8k-32k"
 )
 DEFAULT_MODEL = (
     "/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4"

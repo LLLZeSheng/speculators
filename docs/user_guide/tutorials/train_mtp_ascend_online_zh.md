@@ -19,15 +19,15 @@ epoch 2+：读取同一份缓存 → 按离线方式继续训练
 
 ```text
 镜像：quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
-共享盘：/kos_ulan
-代码：/kos_ulan/lzs/spec_train/speculators
+共享盘：/mnt/xds/mtp
+代码：/mnt/xds/mtp/spec_train/speculators
 量化 verifier：
   /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
 原始 verifier 权重：
   /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
 原生 MTP 初始化模型：
   /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
-训练数据：/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
+训练数据：/mnt/xds/mtp/spec_train/dataset/hf/nuoya-average2k8k-32k
 ```
 
 MG13 主模型层仍然是只用于推理的 W4A8 权重，但准备好的 v4 运行视图中，
@@ -39,7 +39,7 @@ ModelSlim 索引）读取 MTP，并在转换前拒绝任何整数量化的可训
 
 所有节点应当具备：
 
-- 相同的 `/kos_ulan` 挂载；
+- 相同的 `/mnt/xds/mtp` 挂载；
 - 相同的代码路径；
 - 可互通的训练网络；
 - 控制节点到所有配置机器的免密 SSH；
@@ -51,18 +51,18 @@ YAML 是你维护的唯一配置源。管理脚本只读取和校验，不会生
 YAML。先复制模板，然后直接填写机器、容器和路径信息：
 
 ```bash
-cd /kos_ulan/lzs/spec_train/speculators
-mkdir -p /kos_ulan/lzs/spec_train/config
+cd /mnt/xds/mtp/spec_train/speculators
+mkdir -p /mnt/xds/mtp/spec_train/config
 cp examples/train/mtp_glm52_ascend_online_4v4t.example.yaml \
-  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
-vim /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+  /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
+vim /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 如果使用 4 verifier + 2 trainer，改用独立模板：
 
 ```bash
 cp examples/train/mtp_glm52_ascend_online_4v2t.example.yaml \
-  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v2t.yaml
+  /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v2t.yaml
 ```
 
 4V2T 不需要其他开关。manager 自动设置 `NNODES=2`，trainer0 的本地 rank
@@ -84,14 +84,14 @@ cp examples/train/mtp_glm52_ascend_online_4v2t.example.yaml \
 建议配置文件放在：
 
 ```text
-/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
 启动任何远端任务前先进行纯本地校验：
 
 ```bash
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" validate-config --config "$CONFIG"
 ```
 
@@ -139,12 +139,12 @@ YAML 同时明确记录容器行为：
 container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
 container_mode: create
 container_name_prefix: glm52-w4a8-mg13-speculator-training
-container_repo_path: /kos_ulan/lzs/spec_train/speculators
-repo_path: /kos_ulan/lzs/spec_train/speculators
+container_repo_path: /mnt/xds/mtp/spec_train/speculators
+repo_path: /mnt/xds/mtp/spec_train/speculators
 container_mounts:
   - /mnt/xds/sfs:/mnt/xds/sfs
-  - /kos_ulan:/kos_ulan
-  - /kos_ulan/lzs/spec_train/speculators:/kos_ulan/lzs/spec_train/speculators
+  - /mnt/xds/mtp:/mnt/xds/mtp
+  - /mnt/xds/mtp/spec_train/speculators:/mnt/xds/mtp/spec_train/speculators
   - /root/.cache:/root/.cache
 install_speculators_verifier: false
 install_speculators_trainer: false
@@ -153,7 +153,7 @@ install_speculators_trainer: false
 `container_mode: create` 不需要、也不应填写 `existing_container_name`。
 它使用 `docker run` 创建容器，参数与标准 A3 启动方式对齐：host 网络、
 默认 1 GiB shm、16 张 NPU、管理设备、Ascend 驱动、
-`/mnt/xds/sfs`、`/kos_ulan` 和 `/root/.cache`。需要额外挂载目录时，直接在
+`/mnt/xds/sfs`、`/mnt/xds/mtp` 和 `/root/.cache`。需要额外挂载目录时，直接在
 `container_mounts` 追加 `宿主机路径:容器路径[:ro|rw]`。管理任务通过
 nohup 后台执行，因此不会加入只能在交互终端使用的 `-it`。
 
@@ -169,13 +169,13 @@ existing_container_name: glm52-w4a8-mg13-speculator-training
 创建时已经设置正确。`stop` 只根据 PID 文件停止本次 MTP 任务，不会执行
 `docker stop`，因此不会关闭或删除已有容器。
 
-如果已有容器正是用本文开头那种只挂载 `/kos_ulan:/kos_ulan` 的命令创建，
+如果已有容器正是用本文开头那种只挂载 `/mnt/xds/mtp:/mnt/xds/mtp` 的命令创建，
 容器内并不存在 `/workspace/speculators` 映射。这时应把 YAML 改为实际可见
 的代码目录，例如：
 
 ```yaml
-repo_path: /kos_ulan/lzs/spec_train/speculators
-container_repo_path: /kos_ulan/lzs/spec_train/speculators
+repo_path: /mnt/xds/mtp/spec_train/speculators
+container_repo_path: /mnt/xds/mtp/spec_train/speculators
 ```
 
 `create` 模式不带 `--rm`，与给出的手工命令一致。停止后的同名容器仍会
@@ -198,8 +198,8 @@ manager 会先向任务 PID 发送 SIGTERM，但默认只等待 15 秒，因为�
 不需要人工进入任何容器操作：
 
 - verifier、trainer 和 smoke 均不执行 pip install。启动脚本把
-  `/kos_ulan/lzs/spec_train/speculators/src` 和
-  `/kos_ulan/lzs/spec_train/speculators/hs_connectors/src` 加入
+  `/mnt/xds/mtp/spec_train/speculators/src` 和
+  `/mnt/xds/mtp/spec_train/speculators/hs_connectors/src` 加入
   `PYTHONPATH`；trainer 随后直接进入两机 32-rank 或四机 64-rank `torchrun`。
 
 这是必需的兼容策略：镜像内 vLLM 0.23 要求 `setuptools<81`，而仓库的
@@ -224,16 +224,16 @@ trainer 首次加载 verifier 的 embedding/head 时，会使用每台容器本�
 Arrow 数据集：
 
 ```bash
-cd /kos_ulan/lzs/spec_train/speculators
+cd /mnt/xds/mtp/spec_train/speculators
 nohup python scripts/prepare_glm52_nuoya_32k.py \
   --model /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4 \
-  > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
+  > /mnt/xds/mtp/spec_train/dataset/prepare-nuoya-32k.log 2>&1 &
 ```
 
 默认输出为：
 
 ```text
-/kos_ulan/lzs/spec_train/dataset/hf/nuoya-average2k8k-32k
+/mnt/xds/mtp/spec_train/dataset/hf/nuoya-average2k8k-32k
 ```
 
 输出中的 `conversion_manifest.json` 会记录最终条数、平均长度、P50/P90/P99、
@@ -245,15 +245,15 @@ nohup python scripts/prepare_glm52_nuoya_32k.py \
 Nuoya 前 5 个 JSONL，以及 `average-8k` 目录中的第 1 个 JSONL：
 
 ```bash
-cd /kos_ulan/lzs/spec_train/speculators
+cd /mnt/xds/mtp/spec_train/speculators
 nohup bash examples/train/prepare_glm52_nuoya_8k.sh \
-  > /kos_ulan/lzs/spec_train/dataset/prepare-nuoya-first5-long1-8k.log 2>&1 &
+  > /mnt/xds/mtp/spec_train/dataset/prepare-nuoya-first5-long1-8k.log 2>&1 &
 ```
 
 默认输出为：
 
 ```text
-/kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
+/mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-8k
 ```
 
 实际选中的 6 个源文件会写入输出目录的 `conversion_manifest.json`。如源目录
@@ -263,13 +263,13 @@ nohup bash examples/train/prepare_glm52_nuoya_8k.sh \
 
 ```bash
 cp examples/train/mtp_glm52_ascend_online_4v4t_8k.example.yaml \
-  /kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t-8k.yaml
+  /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t-8k.yaml
 ```
 
 该模板使用以下长度预算：
 
 ```yaml
-data_path: /kos_ulan/lzs/spec_train/dataset/hf/nuoya-first5-long1-8k
+data_path: /mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-8k
 verifier_max_model_len: 8193
 verifier_max_batched_tokens: 8208
 verifier_gpu_memory_utilization: 0.90
@@ -289,9 +289,9 @@ FSDP 的 CPU/meta 分片加载流程。
 ## 3. 一键预检
 
 ```bash
-cd /kos_ulan/lzs/spec_train/speculators
+cd /mnt/xds/mtp/spec_train/speculators
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
-CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t.yaml
+CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
 bash "$MANAGER" preflight --config "$CONFIG"
 ```
 
@@ -318,10 +318,10 @@ bash "$MANAGER" start-verifier --index 2 --config "$CONFIG"
 `wait-verifiers` 会等待四个 `/health` 接口全部返回 HTTP 200。启动日志在：
 
 ```text
-/kos_ulan/spec_train/logs/orchestrator/<容器名>.host.log
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log
+/mnt/xds/mtp/spec_train/logs/orchestrator/<容器名>.host.log
+/mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3/verifier0/verifier.log
 ...
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
+/mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3/verifier3/verifier.log
 ```
 
 启动 verifier 时会自动执行
@@ -384,21 +384,21 @@ epoch 数，例如 5，从而保持连续的 optimizer 和 cosine scheduler 状�
 默认缓存位置：
 
 ```text
-/kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
+/mnt/xds/mtp/spec_train/online_hidden_states/glm52-w4a8c8
 ```
 
 默认 checkpoint：
 
 ```text
-/kos_ulan/spec_train/checkpoints/glm52-w4a8c8-mtp3/
+/mnt/xds/mtp/spec_train/checkpoints/glm52-w4a8c8-mtp3/
 ```
 
 训练日志：
 
 ```text
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node0.log
+/mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node0.log
 ...
-/kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node3.log
+/mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3/trainer-node3.log
 ```
 
 每个 trainer 节点的 local-rank 0 会在模型初始化阶段每 30 秒记录一次结构化
@@ -432,7 +432,7 @@ distributed checkpoint load；若要对比诊断，可临时设置为 `false` �
 `hs_<index>.safetensors`：
 
 ```bash
-CONFIG=/kos_ulan/lzs/spec_train/config/glm52-mtp3-4v4t-8k.yaml
+CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t-8k.yaml
 MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
 
 bash "$MANAGER" start-verifiers --config "$CONFIG"
@@ -555,16 +555,16 @@ TensorBoard：
 
 ```bash
 tensorboard \
-  --logdir /kos_ulan/spec_train/logs/glm52-w4a8c8-mtp3/metrics \
+  --logdir /mnt/xds/mtp/spec_train/logs/glm52-w4a8c8-mtp3/metrics \
   --host 0.0.0.0 --port 6006
 ```
 
 检查缓存：
 
 ```bash
-find /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8 \
+find /mnt/xds/mtp/spec_train/online_hidden_states/glm52-w4a8c8 \
   -type f -name 'hs_*.safetensors' | wc -l
-du -sh /kos_ulan/spec_train/online_hidden_states/glm52-w4a8c8
+du -sh /mnt/xds/mtp/spec_train/online_hidden_states/glm52-w4a8c8
 ```
 
 停止当前容器名前缀对应的 verifier、trainer 和 smoke 容器：
@@ -590,7 +590,7 @@ hidden states，不会构造或加载原生 MTP drafter 的共享 embedding/head
 
 verifier 启动时会自动应用 `scripts/patch_vllm_hidden_state_enolck.py` 和
 `scripts/patch_vllm_hidden_state_connector_tp_gather.py`。
-当 `/kos_ulan` 等共享文件系统不支持 `flock` 并返回 `Errno 37` 时，该补丁会
+当 `/mnt/xds/mtp` 等共享文件系统不支持 `flock` 并返回 `Errno 37` 时，该补丁会
 改为同步写完 hidden-state safetensors 后再返回路径。这样既不会使 EngineCore
 崩溃，也不会让 trainer 读到未写完整的文件。补丁不修改模型权重或 config，
 并且可以用以下命令检查或恢复：

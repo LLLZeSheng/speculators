@@ -91,7 +91,7 @@ def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
     )
 
     assert (
-        "DATA_PATH=${DATA_PATH:-/kos_ulan/lzs/spec_train/dataset/hf/"
+        "DATA_PATH=${DATA_PATH:-/mnt/xds/mtp/spec_train/dataset/hf/"
         in result.stdout
     )
     assert "nuoya-first5-long1-8k}" in result.stdout
@@ -229,7 +229,7 @@ def test_manager_validates_user_yaml_and_dry_runs_topology(tmp_path: Path):
         in text
     )
     assert (
-        "data_path: /kos_ulan/lzs/spec_train/dataset/hf/"
+        "data_path: /mnt/xds/mtp/spec_train/dataset/hf/"
         "nuoya-average2k8k-32k" in text
     )
     assert "verifier_max_model_len: 32769" in text
@@ -508,7 +508,7 @@ def test_wrapper_resolves_nic_from_local_ip(tmp_path: Path):
                 "/mnt/xds/sfs/l00936201/glm52-w4a8-mg13/"
                 "v1-ascend-modelslim-v4"
             ),
-            "DATA_PATH": "/kos_ulan/datasets/glm52-mtp-online",
+            "DATA_PATH": "/mnt/xds/mtp/datasets/glm52-mtp-online",
         }
     )
     result = subprocess.run(
