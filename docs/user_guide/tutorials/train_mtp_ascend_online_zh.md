@@ -325,8 +325,10 @@ mtp_activation_checkpointing: true
 
 这里不是只靠缩短序列省显存：完整 `lm_head` 会作为独立 FSDP 分组在使用后
 重新分片，三步 MTP 的所有 logits chunk 共用一次 head 生命周期；MTP 层激活在
-反向时重算。启动日志中的 `FSDP group: ... size_gib=...` 会显示每个 all-gather
-分组的真实大小，便于区分参数峰值与序列激活峰值。
+反向时重算。启动日志中的 `FSDP group` 会同时显示 FP32 master 大小和 BF16
+all-gather 大小，便于区分参数峰值与序列激活峰值。memory-efficient 策略还会用
+BF16 做梯度归约、禁用 backward prefetch，并让 root group 在 forward 后重新分片，
+避免 6 GiB all-gather 与上一组 FP32 梯度通信缓冲重叠。
 
 在线训练会保留 YAML 中的全部 verifier endpoint。file backend 在 shared hidden
 states 目录用原子 lease 汇总每台 verifier 的在途 token 数，新请求选择 token

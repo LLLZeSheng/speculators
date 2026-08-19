@@ -207,20 +207,31 @@ def apply_fully_sharded(
     Model should be validated with SpeculatorModel.verify_training_compatible()
     before calling this function.
     """
-    mp_policy = MixedPrecisionPolicy(
-        param_dtype=param_dtype,
-        reduce_dtype=torch.float32,
-    )
-
     if wrap_policy not in {"layer", "memory_efficient"}:
         raise ValueError(f"Unsupported FSDP wrap policy: {wrap_policy}")
     if min_numel <= 0:
         raise ValueError(f"min_numel must be positive, got {min_numel}")
 
+    reduce_dtype = param_dtype if wrap_policy == "memory_efficient" else torch.float32
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=param_dtype,
+        # FP32 reduction doubles the full-size gradient communication buffer
+        # relative to BF16 parameters. For multi-GiB GLM-MoE groups that buffer
+        # overlaps the next backward all-gather and exhausts 64-GiB NPUs.
+        # Optimizer master parameters remain FP32; only collective payloads use
+        # the model's mixed-precision dtype.
+        reduce_dtype=reduce_dtype,
+    )
+
     wrapped: set[int] = set()
     managed_parameters: set[int] = set()
 
-    def shard(module: torch.nn.Module, name: str) -> None:
+    def shard(
+        module: torch.nn.Module,
+        name: str,
+        *,
+        reshard_after_forward: bool | None = None,
+    ) -> None:
         module_id = id(module)
         if module_id in wrapped:
             return
@@ -233,14 +244,23 @@ def apply_fully_sharded(
             parameter.numel() * parameter.element_size()
             for parameter in group_parameters
         )
+        collective_bytes = sum(parameter.numel() for parameter in group_parameters) * (
+            torch.empty((), dtype=param_dtype).element_size()
+        )
         logger.info(
-            "FSDP group: module=%s tensors=%d parameters=%d size_gib=%.2f",
+            "FSDP group: module=%s tensors=%d parameters=%d "
+            "master_size_gib=%.2f all_gather_size_gib=%.2f",
             name,
             len(group_parameters),
             sum(parameter.numel() for parameter in group_parameters),
             group_bytes / 1024**3,
+            collective_bytes / 1024**3,
         )
-        fully_shard(module, mp_policy=mp_policy)
+        fully_shard(
+            module,
+            mp_policy=mp_policy,
+            reshard_after_forward=reshard_after_forward,
+        )
         managed_parameters.update(map(id, group_parameters))
         wrapped.add(module_id)
 
@@ -263,8 +283,8 @@ def apply_fully_sharded(
         # submodules bottom-up so attention, routed experts, shared experts,
         # and embeddings can reshard independently.
         #
-        # Frozen lm_head.weight was converted to a buffer above, so it is not a
-        # candidate here and cannot be inherited by the root parameter group.
+        # Frozen lm_head.weight was wrapped as its own child group above, so it
+        # is not a candidate here and cannot be inherited by the root group.
         layers = set(map(id, model.layers))  # type: ignore[union-attr]
         candidates: list[tuple[str, torch.nn.Module, int]] = []
         for name, module in model.named_modules():
@@ -291,6 +311,34 @@ def apply_fully_sharded(
     for layer_index, layer in enumerate(model.layers):  # type: ignore[union-attr]
         shard(layer, f"layers.{layer_index}")
 
-    shard(model, "root")
+    # Explicit True overrides FSDP2's special root default (False). Leaving a
+    # multi-GiB root group unsharded across the whole iteration defeats this
+    # policy's peak-memory guarantee.
+    shard(
+        model,
+        "root",
+        reshard_after_forward=True if wrap_policy == "memory_efficient" else None,
+    )
+
+    if wrap_policy == "memory_efficient":
+        # FSDP2 defaults to prefetching the next parameter group during
+        # backward. That is desirable for throughput, but makes two unsharded
+        # multi-GiB groups (plus reduce-scatter input) overlap. An explicit
+        # empty list overrides the implicit reverse-post-forward prefetch.
+        prefetch_disabled = 0
+        for module in model.modules():
+            disable_prefetch = getattr(
+                module, "set_modules_to_backward_prefetch", None
+            )
+            if callable(disable_prefetch):
+                disable_prefetch([])
+                prefetch_disabled += 1
+
+        logger.info(
+            "FSDP memory-safe scheduling: reduce_dtype=%s "
+            "backward_prefetch=disabled modules=%d root_reshard_after_forward=true",
+            param_dtype,
+            prefetch_disabled,
+        )
 
     return model

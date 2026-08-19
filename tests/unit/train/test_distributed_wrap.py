@@ -1,6 +1,6 @@
 """Tests for memory-bounded FSDP wrapping policy."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 from torch import nn
@@ -27,11 +27,20 @@ class _Model(nn.Module):
 def test_memory_efficient_wraps_large_children_before_layer_and_root():
     model = _Model()
     calls: list[nn.Module] = []
+    backward_prefetch_controls: list[Mock] = []
+
+    def fake_fully_shard(module, **_kwargs):
+        calls.append(module)
+        control = Mock()
+        module.set_modules_to_backward_prefetch = control
+        backward_prefetch_controls.append(control)
 
     with patch(
         "speculators.train.distributed.fully_shard",
-        side_effect=lambda module, **_kwargs: calls.append(module),
-    ):
+        side_effect=fake_fully_shard,
+    ) as fully_shard_mock, patch(
+        "speculators.train.distributed.MixedPrecisionPolicy"
+    ) as policy:
         apply_fully_sharded(
             model,
             param_dtype=torch.bfloat16,
@@ -51,6 +60,15 @@ def test_memory_efficient_wraps_large_children_before_layer_and_root():
     )
     assert calls.index(model.layers[0]) < calls.index(model)
     assert calls.index(model.lm_head) < calls.index(model)
+    assert policy.call_args.kwargs["param_dtype"] == torch.bfloat16
+    assert policy.call_args.kwargs["reduce_dtype"] == torch.bfloat16
+    root_call = next(
+        call for call in fully_shard_mock.call_args_list if call.args[0] is model
+    )
+    assert root_call.kwargs["reshard_after_forward"] is True
+    assert backward_prefetch_controls
+    for control in backward_prefetch_controls:
+        control.assert_called_once_with([])
 
 
 def test_layer_wrap_policy_preserves_original_granularity():
