@@ -219,12 +219,40 @@ def apply_fully_sharded(
 
     wrapped: set[int] = set()
 
-    def shard(module: torch.nn.Module) -> None:
+    def shard(
+        module: torch.nn.Module, *, reshard_after_forward: bool = True
+    ) -> None:
         module_id = id(module)
         if module_id in wrapped:
             return
-        fully_shard(module, mp_policy=mp_policy)
+        fully_shard(
+            module,
+            mp_policy=mp_policy,
+            reshard_after_forward=reshard_after_forward,
+        )
         wrapped.add(module_id)
+
+    # MTP computes its frozen vocabulary projection inside a non-reentrant
+    # activation checkpoint so that full-vocabulary logits are discarded per
+    # sequence chunk.  The checkpoint body is called again during backward. If
+    # lm_head belongs to the root group (or to a normal resharding child group),
+    # its weight may already be a sharded DTensor at that point while the saved
+    # hidden-state input is an ordinary Tensor.  F.linear rejects that mixture.
+    # Give the head its own group and retain its gathered ordinary Tensor from
+    # the first chunk through backward recomputation. It is frozen, so retaining
+    # it does not retain gradients or optimizer state.
+    lm_head = getattr(model, "lm_head", None)
+    if (
+        isinstance(lm_head, torch.nn.Module)
+        and hasattr(lm_head, "weight")
+        and not lm_head.weight.requires_grad
+    ):
+        logger.info(
+            "FSDP checkpoint-safe wrap: module=lm_head "
+            "reshard_after_forward=false parameters=%d",
+            sum(parameter.numel() for parameter in lm_head.parameters()),
+        )
+        shard(lm_head, reshard_after_forward=False)
 
     if wrap_policy == "memory_efficient":
         # FSDP all-gathers one wrapping unit at a time. GLM-MoE layers contain
@@ -233,12 +261,8 @@ def apply_fully_sharded(
         # submodules bottom-up so attention, routed experts, shared experts,
         # and embeddings can reshard independently.
         #
-        # Keep lm_head owned by the root FSDP unit. MTP's memory-efficient loss
-        # checkpoints vocabulary projections and recomputes them during backward.
-        # A separately wrapped FSDP2 Linear has already resharded its weight to a
-        # DTensor by then, producing a mixed Tensor/DTensor matmul on recomputation.
-        # Root ownership keeps the head unsharded across the complete model forward
-        # and makes the root pre-backward unshard cover checkpoint recomputation.
+        # lm_head was assigned above to a non-resharding child group, so it is
+        # skipped here and excluded automatically from the root group.
         layers = set(map(id, model.layers))  # type: ignore[union-attr]
         candidates: list[tuple[str, torch.nn.Module, int]] = []
         for name, module in model.named_modules():
