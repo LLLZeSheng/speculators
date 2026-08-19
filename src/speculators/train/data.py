@@ -274,6 +274,7 @@ class ArrowDataset(BaseDataset):
         self._endpoint_cursor = int(os.environ.get("RANK", "0")) % len(
             self.vllm_endpoints
         )
+        self._endpoint_coordination_warned = False
         self._transfer_ready = False
         self.model = model
         self.request_timeout = request_timeout
@@ -319,6 +320,76 @@ class ArrowDataset(BaseDataset):
             self.vllm_endpoints
         )
         return endpoint
+
+    def _acquire_endpoint_lease(
+        self,
+        token_count: int,
+        excluded: set[str],
+    ) -> tuple[str, Path | None]:
+        """Choose the least token-loaded verifier across all trainer nodes.
+
+        Atomic file creation works on shared filesystems that do not implement
+        ``flock``. Leases are intentionally tiny; hidden-state tensors remain
+        the dominant I/O by several orders of magnitude. If coordination is
+        unavailable, preserve service by falling back to local rotation.
+        """
+        available = [
+            index
+            for index, endpoint in enumerate(self.vllm_endpoints)
+            if endpoint not in excluded
+        ]
+        if not available:
+            excluded.clear()
+            available = list(range(len(self.vllm_endpoints)))
+
+        if not isinstance(self.transfer, FileTransfer):
+            return self._next_endpoint(), None
+
+        lease_dir = self.transfer.hidden_states_path / ".verifier_endpoint_load"
+        try:
+            lease_dir.mkdir(parents=True, exist_ok=True)
+            loads = [0] * len(self.vllm_endpoints)
+            now = time.time()
+            timeout = self.request_timeout or DEFAULT_REQUEST_TIMEOUT
+            stale_after = max(300.0, float(timeout) * 2 + 60)
+            for lease in lease_dir.glob("endpoint-*-tokens-*-*.lease"):
+                try:
+                    if now - lease.stat().st_mtime > stale_after:
+                        lease.unlink(missing_ok=True)
+                        continue
+                    fields = lease.name.split("-")
+                    endpoint_index = int(fields[1])
+                    tokens = int(fields[3])
+                    if 0 <= endpoint_index < len(loads):
+                        loads[endpoint_index] += tokens
+                except (OSError, ValueError, IndexError):
+                    continue
+
+            # Rotate equal-load ties so a simultaneous first wave does not all
+            # favor endpoint zero before each other's lease becomes visible.
+            endpoint_index = min(
+                available,
+                key=lambda index: (
+                    loads[index],
+                    (index - self._endpoint_cursor) % len(self.vllm_endpoints),
+                ),
+            )
+            lease = lease_dir / (
+                f"endpoint-{endpoint_index}-tokens-{token_count}-"
+                f"{os.getpid()}-{time.time_ns()}.lease"
+            )
+            lease.touch(exist_ok=False)
+            self._endpoint_cursor = (endpoint_index + 1) % len(self.vllm_endpoints)
+            return self.vllm_endpoints[endpoint_index], lease
+        except OSError as error:
+            if not self._endpoint_coordination_warned:
+                warnings.warn(
+                    "Shared verifier load coordination is unavailable; falling "
+                    f"back to local endpoint rotation: {error}",
+                    stacklevel=1,
+                )
+                self._endpoint_coordination_warned = True
+            return self._next_endpoint(), None
 
     def _setup_client(self):
         endpoint = self._next_endpoint()
@@ -393,8 +464,11 @@ class ArrowDataset(BaseDataset):
             else:
                 total_attempts = self.max_retries + 1
                 last_error: Exception | None = None
+                excluded_endpoints: set[str] = set()
                 for attempt in range(1, total_attempts + 1):
-                    endpoint = self._next_endpoint()
+                    endpoint, endpoint_lease = self._acquire_endpoint_lease(
+                        len(client_item["input_ids"]), excluded_endpoints
+                    )
                     request_started = time.monotonic()
                     try:
                         client, model_id = self._client_for_endpoint(endpoint)
@@ -412,11 +486,15 @@ class ArrowDataset(BaseDataset):
                         break
                     except Exception as error:  # noqa: BLE001 - endpoint failover
                         last_error = error
+                        excluded_endpoints.add(endpoint)
                         warnings.warn(
                             f"Verifier request failed at {endpoint} "
                             f"(attempt {attempt}/{total_attempts}): {error}",
                             stacklevel=1,
                         )
+                    finally:
+                        if endpoint_lease is not None:
+                            endpoint_lease.unlink(missing_ok=True)
                 else:
                     if last_error is None:
                         raise RuntimeError("verifier endpoint pool made no attempts")

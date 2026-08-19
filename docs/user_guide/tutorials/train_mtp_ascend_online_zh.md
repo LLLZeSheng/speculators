@@ -328,12 +328,14 @@ mtp_activation_checkpointing: true
 反向时重算。启动日志中的 `FSDP group: ... size_gib=...` 会显示每个 all-gather
 分组的真实大小，便于区分参数峰值与序列激活峰值。
 
-在线训练会保留 YAML 中的全部 verifier endpoint。每个 DataLoader worker 在完成
-一个样本后轮转到下一 endpoint；连接失败时本次请求直接切换下一台，不再把某个
-local rank 永久绑定到一台 verifier。4K 模板允许最多四个短 prompt，但 token
-budget 把完整 4K prompt 限制为同时两个；继续提高 token budget 前应先检查 NPU
-峰值和共享存储吞吐。每个完成样本还会输出 `VERIFIER_REQUEST`，分别记录服务请求
-与共享文件读取耗时，从而直接判断慢在 verifier 计算还是 NFS。
+在线训练会保留 YAML 中的全部 verifier endpoint。file backend 在 shared hidden
+states 目录用原子 lease 汇总每台 verifier 的在途 token 数，新请求选择 token
+负载最低的 endpoint；该机制不依赖 NFS `flock`。连接失败时本次请求直接切换
+下一台，不再把某个 local rank 永久绑定到一台 verifier。若共享协调不可用则退化
+为本地轮转。4K 模板允许最多四个短 prompt，但 token budget 把完整 4K prompt
+限制为同时两个；继续提高 token budget 前应先检查 NPU 峰值和共享存储吞吐。
+每个完成样本还会输出 `VERIFIER_REQUEST`，分别记录服务请求与共享文件读取耗时，
+从而直接判断慢在 verifier 计算还是 NFS。
 
 从 8K 切换到上述 4K verifier 限制后，必须重启 verifier；仅修改 trainer 的
 `total_seq_len` 而继续使用 8K verifier 限制时则无需重启。完整切换命令：

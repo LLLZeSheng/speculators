@@ -10,6 +10,7 @@ from datasets import Dataset
 from safetensors.torch import save_file
 
 import scripts.train as train_module
+from hs_connectors import FileTransfer
 from speculators.models.eagle3.data import shift_batch
 from speculators.train.data import (
     ArrowDataset,
@@ -742,3 +743,24 @@ def test_arrow_dataset_rotates_and_fails_over_verifier_endpoints(
     assert result is not None
     assert [call.args[0] for call in generate.call_args_list] == [client_a, client_b]
     assert all(call.kwargs["max_retries"] == 0 for call in generate.call_args_list)
+
+
+def test_arrow_dataset_balances_shared_inflight_tokens(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK", "0")
+    transfer = FileTransfer(tmp_path / "hidden-states")
+    kwargs = {
+        "transfer": transfer,
+        "vllm_endpoint": "http://verifier-a/v1,http://verifier-b/v1",
+    }
+    first = _online_arrow_dataset(tmp_path / "first", **kwargs)
+    second = _online_arrow_dataset(tmp_path / "second", **kwargs)
+
+    endpoint_a, lease_a = first._acquire_endpoint_lease(4096, set())
+    endpoint_b, lease_b = second._acquire_endpoint_lease(4096, set())
+
+    assert endpoint_a == "http://verifier-a/v1"
+    assert endpoint_b == "http://verifier-b/v1"
+    assert lease_a is not None
+    assert lease_b is not None
+    lease_a.unlink()
+    lease_b.unlink()
