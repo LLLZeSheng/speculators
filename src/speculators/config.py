@@ -19,7 +19,7 @@ Classes:
 """
 
 import os
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, ClassVar
 
 import torch
@@ -35,6 +35,17 @@ __all__ = [
     "VerifierConfig",
     "reload_schemas",
 ]
+
+
+def _speculators_version() -> str:
+    """Return a usable version for both installed and source-tree execution."""
+    try:
+        return version("speculators")
+    except PackageNotFoundError:
+        # Ascend runtime images execute this repository directly through
+        # PYTHONPATH because editable installation would disturb the image's
+        # pinned packaging toolchain.  Package metadata is therefore optional.
+        return os.environ.get("SPECULATORS_VERSION", "0.0.0+source")
 
 
 class VerifierConfig(BaseModel):
@@ -275,7 +286,7 @@ class SpeculatorModelConfig(PydanticClassRegistryMixin, PretrainedConfig):
         description="The type of model from the Speculators repo this config is for.",
     )
     speculators_version: str = Field(
-        default=version("speculators"),
+        default=_speculators_version(),
         description="Version of the speculators library",
     )
     speculators_config: SpeculatorsConfig = Field(  # type: ignore[assignment]

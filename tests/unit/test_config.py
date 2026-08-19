@@ -298,6 +298,20 @@ def test_speculator_model_config_initialization(sample_speculators_config):
     assert hasattr(config, "save_pretrained")
 
 
+def test_source_checkout_uses_fallback_version(monkeypatch):
+    from importlib.metadata import PackageNotFoundError
+
+    from speculators import config as config_module
+
+    def missing_distribution(_name: str) -> str:
+        raise PackageNotFoundError("speculators")
+
+    monkeypatch.setattr(config_module, "version", missing_distribution)
+    monkeypatch.setenv("SPECULATORS_VERSION", "0.0.0+checkout")
+
+    assert config_module._speculators_version() == "0.0.0+checkout"
+
+
 @pytest.mark.smoke
 def test_speculator_model_config_auto_registry():
     classes = SpeculatorModelConfig.registered_classes()
