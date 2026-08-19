@@ -507,11 +507,12 @@ bash "$MANAGER" collect-offline --config "$CONFIG"
 bash "$MANAGER" offline-status --config "$CONFIG"
 ```
 
-Verifier 数量由 `verifier_ips` 的长度动态决定，不局限于 4 台。仓库另提供了
-8 台 verifier、无 trainer 的专用采集模板：
+Verifier 数量由 `verifier_ips` 的长度动态决定，不局限于 4 台。仓库提供了
+8 台 verifier、无 trainer 的 8K 和 4K 专用采集模板：
 
 ```text
 examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml
+examples/train/mtp_glm52_ascend_offline_collect_8v_4k.example.yaml
 ```
 
 复制并填写 8 个地址后，使用同样的命令启动。Manager 会自动向每个 collector
@@ -519,6 +520,18 @@ examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml
 `smoke`、`train` 和 `offline` 命令仍要求改用包含 2 或 4 个 trainer 的训练 YAML。
 采集 YAML 与训练 YAML 必须使用完全相同的 `data_path` 和
 `hidden_states_path`。
+
+4K 配置还提供了一个只封装上述 Manager 命令的便捷脚本。它不会启动 trainer，
+八个 collector 仍按 rank 分配互不重叠的数据范围，并可重复执行来续传：
+
+```bash
+export CONFIG=/mnt/xds/mtp/spec_train/config/glm52-mtp3-offline-8v-4k.yaml
+bash examples/train/collect_glm52_nuoya_4k_8v.sh prepare
+bash examples/train/collect_glm52_nuoya_4k_8v.sh collect
+bash examples/train/collect_glm52_nuoya_4k_8v.sh status
+# 全部完成后：
+bash examples/train/collect_glm52_nuoya_4k_8v.sh verify
+```
 
 全部 collector 结束后，先验证文件数量，并抽样加载 safetensors 检查 token 和
 hidden-state 长度。只有检查通过才会原子写入 `.offline-ready.json`：
