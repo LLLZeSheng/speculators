@@ -116,7 +116,9 @@ FSDP_SKIP_INITIAL_BROADCAST=${FSDP_SKIP_INITIAL_BROADCAST:-1}
 FSDP_WRAP_POLICY=${FSDP_WRAP_POLICY:-memory_efficient}
 FSDP_MIN_NUMEL=${FSDP_MIN_NUMEL:-8000000}
 MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-1024}
-MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-1}
+# Direct torch.utils.checkpoint around nested FSDP2 modules is not enabled by
+# default: FSDP-aware checkpoint wrapping is required before this can be safe.
+MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-0}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2

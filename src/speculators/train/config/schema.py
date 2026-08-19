@@ -455,7 +455,7 @@ class TrainerArgs(_Group):
         default="layer",
         description="FSDP wrapping granularity. 'layer' preserves the original "
         "behavior; 'memory_efficient' separately wraps large projections, routed "
-        "experts, embeddings, and LM heads to lower all-gather peak memory.",
+        "experts, and embeddings to lower all-gather peak memory.",
     )
     fsdp_min_numel: int = Field(
         default=8_000_000,

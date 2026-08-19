@@ -600,6 +600,13 @@ def main(cfg: TrainConfig):  # noqa: C901
                 "--fsdp-skip-initial-broadcast requires every rank to load the "
                 "same complete --from-pretrained checkpoint"
             )
+    if args.fsdp_shard and args.mtp_activation_checkpointing:
+        logger.warning(
+            "Disabling MTP activation checkpointing with FSDP2: direct nested-module "
+            "checkpoint recomputation is not DTensor-safe. Logits chunking remains "
+            "enabled."
+        )
+        args.mtp_activation_checkpointing = False
 
     # Install partial-neox rotary patch if not using full-head hack
     if not args.draft_mrope_full_head_hack:

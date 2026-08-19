@@ -231,11 +231,20 @@ def apply_fully_sharded(
         # several multi-GiB projections; wrapping only the decoder layer makes
         # all of them resident concurrently. Wrap large parameter-owning
         # submodules bottom-up so attention, routed experts, shared experts,
-        # embeddings, and the vocabulary head can reshard independently.
+        # and embeddings can reshard independently.
+        #
+        # Keep lm_head owned by the root FSDP unit. MTP's memory-efficient loss
+        # checkpoints vocabulary projections and recomputes them during backward.
+        # A separately wrapped FSDP2 Linear has already resharded its weight to a
+        # DTensor by then, producing a mixed Tensor/DTensor matmul on recomputation.
+        # Root ownership keeps the head unsharded across the complete model forward
+        # and makes the root pre-backward unshard cover checkpoint recomputation.
         layers = set(map(id, model.layers))  # type: ignore[union-attr]
         candidates: list[tuple[str, torch.nn.Module, int]] = []
         for name, module in model.named_modules():
             if module is model or id(module) in layers:
+                continue
+            if name == "lm_head" or name.endswith(".lm_head"):
                 continue
             direct_numel = sum(
                 parameter.numel() for parameter in module.parameters(recurse=False)

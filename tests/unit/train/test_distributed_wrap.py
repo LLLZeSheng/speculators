@@ -40,7 +40,7 @@ def test_memory_efficient_wraps_large_children_before_layer_and_root():
 
     assert model.layers[0].large_projection in calls
     assert model.embed_tokens in calls
-    assert model.lm_head in calls
+    assert model.lm_head not in calls
     assert model.layers[0].small_projection not in calls
     assert calls.index(model.layers[0].large_projection) < calls.index(model.layers[0])
     assert calls.index(model.layers[0]) < calls.index(model)
