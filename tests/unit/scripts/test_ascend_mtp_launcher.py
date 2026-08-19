@@ -82,6 +82,7 @@ def test_verifier_dry_run_builds_w4a8_hidden_state_service():
     assert "--tensor-parallel-size 16" in result.stdout
     assert "--max-model-len 32769" in result.stdout
     assert "--max-num-batched-tokens 32768" in result.stdout
+    assert "--no-enable-prefix-caching" in result.stdout
     assert "scripts/prepare_mixed_quant_model.py" not in result.stdout
     assert "--quantization ascend" in result.stdout
     assert "--enable-expert-parallel" in result.stdout

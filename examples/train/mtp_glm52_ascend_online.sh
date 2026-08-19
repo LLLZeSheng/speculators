@@ -466,6 +466,12 @@ run_verifier() {
         --gpu-memory-utilization "$VERIFIER_GPU_MEMORY_UTILIZATION"
         "${quantization_args[@]}"
         --enforce-eager
+        # V1 enables automatic prefix caching by default. A cache hit skips
+        # computation for complete prefix blocks, but the extraction connector
+        # must export one hidden-state row for every prompt token. Reusing only
+        # KV state therefore produces a short tensor (for example 1671 rows for
+        # a 1799-token prompt after one 128-token block is reused).
+        --no-enable-prefix-caching
         # extract_hidden_states currently saves only the local sequence shard
         # under DSA context parallelism (e.g. 1024 tokens become 128 at CP=8).
         # Keep sequence states replicated so the file matches full token_ids.
