@@ -1,0 +1,78 @@
+# Two-verifier/six-trainer 4K MTP2 profile for existing Ascend containers.
+version: 1
+cluster_name: glm52-online-mtp2-2v6t-4k
+
+verifier_ips:
+  - FILL_VERIFIER_0_IP
+  - FILL_VERIFIER_1_IP
+trainer_ips:
+  - FILL_TRAINER_0_IP
+  - FILL_TRAINER_1_IP
+  - FILL_TRAINER_2_IP
+  - FILL_TRAINER_3_IP
+  - FILL_TRAINER_4_IP
+  - FILL_TRAINER_5_IP
+
+container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_mode: existing
+existing_container_name: glm52-w4a8-mg13-speculator-training-lzs
+container_name_prefix: glm52-w4a8-mg13-speculator-training-lzs
+container_repo_path: /mnt/xds/mtp/spec_train/speculators
+repo_path: /mnt/xds/mtp/spec_train/speculators
+shared_root: /mnt/xds/mtp
+nic_name: auto
+
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /mnt/xds/mtp:/mnt/xds/mtp
+  - /mnt/xds/mtp/spec_train/speculators:/mnt/xds/mtp/spec_train/speculators
+  - /root/.cache:/root/.cache
+
+verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+verifier_quantization_mode: ascend
+mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+data_path: /mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-4k
+hidden_states_path: /mnt/xds/mtp/spec_train/hidden_states/glm52-w4a8-mg13-online-4k
+output_path: /mnt/xds/mtp/spec_train/ckpts/glm52-w4a8-mg13-mtp2-2v6t-4k
+log_root: /mnt/xds/mtp/spec_train/logs/glm52-w4a8-mg13-mtp2-2v6t-4k
+
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+
+verifier_port: 8077
+verifier_dp_size: 1
+verifier_tp_size: 16
+verifier_block_size: 128
+verifier_max_model_len: 4097
+verifier_max_num_seqs: 2
+verifier_max_batched_tokens: 8224
+verifier_gpu_memory_utilization: 0.75
+num_speculative_steps: 2
+total_seq_len: 4096
+smoke_seq_len: 4096
+# Six trainers need at least 6 * 16 * 4 rows for the smoke sampler.
+smoke_samples: 384
+request_timeout: 900
+max_retries: 3
+num_workers: 1
+prefetch_factor: 1
+offline_collection_concurrency: 1
+offline_collection_max_samples: 0
+offline_validation_samples: 8
+epochs: 5
+fsdp_skip_initial_broadcast: true
+fsdp_wrap_policy: memory_efficient
+fsdp_min_numel: 8000000
+fsdp_experts_per_unit: 2
+mtp_logits_chunk_size: 128
+# Keep disabled in this profile while the FSDP2 recompute peak is isolated.
+mtp_activation_checkpointing: false
+startup_heartbeat_seconds: 30
+trainer_mode: smoke
+trainer_data_mode: online-cache
+smoke_run_id: FILL_UNIQUE_SMOKE_ID
+
+install_speculators_verifier: false
+install_speculators_trainer: false

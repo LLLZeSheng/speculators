@@ -112,8 +112,9 @@ load_config() {
         fail "CLUSTER_TRAINER_IPS is missing"
     ((${#CLUSTER_VERIFIER_IPS[@]} >= 1)) || fail "expected at least one verifier IP"
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
-    ((trainer_count == 0 || trainer_count == 2 || trainer_count == 4)) || \
-        fail "expected zero, two, or four trainer IPs"
+    ((trainer_count == 0 || trainer_count == 2 || \
+       trainer_count == 4 || trainer_count == 6)) || \
+        fail "expected zero, two, four, or six trainer IPs"
     CONTAINER_NAME_PREFIX=${CONTAINER_NAME_PREFIX:-$DEFAULT_CONTAINER_PREFIX}
     REMOTE_REPO_PATH=${REMOTE_REPO_PATH:-$DEFAULT_REPO}
     SHARED_ROOT=${SHARED_ROOT:-/mnt/xds/mtp}
@@ -131,15 +132,23 @@ load_config() {
 }
 
 require_trainers() {
-    ((${#CLUSTER_TRAINER_IPS[@]} == 2 || ${#CLUSTER_TRAINER_IPS[@]} == 4)) || \
-        fail "this command requires exactly two or four trainer_ips; use a training YAML"
+    ((${#CLUSTER_TRAINER_IPS[@]} == 2 || \
+       ${#CLUSTER_TRAINER_IPS[@]} == 4 || \
+       ${#CLUSTER_TRAINER_IPS[@]} == 6)) || \
+        fail "this command requires exactly two, four, or six trainer_ips; use a training YAML"
 }
 
 verifier_hosts_for_trainer() {
     local trainer_index=$1
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    local verifier_count=${#CLUSTER_VERIFIER_IPS[@]}
     local verifier_index
     local -a selected=()
+    if ((verifier_count < trainer_count)); then
+        local IFS=,
+        printf '%s' "${CLUSTER_VERIFIER_IPS[*]}"
+        return
+    fi
     for verifier_index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
         if ((verifier_index % trainer_count == trainer_index)); then
             selected+=("${CLUSTER_VERIFIER_IPS[$verifier_index]}")

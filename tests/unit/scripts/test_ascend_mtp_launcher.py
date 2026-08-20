@@ -346,6 +346,31 @@ def test_shared_config_auto_maps_two_trainers_across_four_verifiers(tmp_path):
     assert "10.0.0.13" in result.stdout
 
 
+def test_shared_config_maps_six_trainers_to_two_verifier_pool(tmp_path):
+    config = tmp_path / "cluster-2v6t.env"
+    config.write_text(
+        "\n".join(
+            [
+                'CLUSTER_VERIFIER_IPS=("10.0.0.10" "10.0.0.11")',
+                'CLUSTER_TRAINER_IPS=("10.0.0.20" "10.0.0.21" '
+                '"10.0.0.22" "10.0.0.23" "10.0.0.24" "10.0.0.25")',
+                "NIC_NAME=eth0",
+                "SMOKE_RUN_ID=unit-test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = _run_container(
+        CONFIG_FILE=str(config), NODE_IP="10.0.0.25", TRAINER_MODE="trainer"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NODE_RANK=5" in result.stdout
+    assert "NNODES=6" in result.stdout
+    assert "VERIFIER_HOST=10.0.0.10" in result.stdout
+    assert "VERIFIER_HOSTS=10.0.0.10,10.0.0.11" in result.stdout
+
+
 def test_shared_config_auto_maps_verifier_and_id(tmp_path):
     config = tmp_path / "cluster.env"
     config.write_text(

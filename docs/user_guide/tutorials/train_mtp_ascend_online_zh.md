@@ -1,8 +1,8 @@
 # Ascend 910C 多机在线训练 GLM-5.2 MTP3
 
-本文支持 4 台 verifier + 4 台 trainer（64-rank FSDP）以及新增的 4 台
-verifier + 2 台 trainer（32-rank FSDP）。每台机器使用 16 张 NPU，verifier
-采用 DP1 × TP16。原有 4V4T 配置和行为保持不变。
+本文支持 4V4T（64-rank FSDP）、4V2T（32-rank FSDP）以及 2V6T
+（96-rank FSDP）。每台机器使用 16 张 NPU，verifier 采用 DP1 × TP16。
+原有 4V4T 配置和行为保持不变。
 
 数据生命周期如下：
 
@@ -70,10 +70,21 @@ cp examples/train/mtp_glm52_ascend_online_4v2t.example.yaml \
 因此四台 verifier 都会参与在线 hidden-state 生成。4V4T 仍按 trainer `i`
 对应 verifier `i`。
 
+如果使用 2 verifier + 6 trainer 的 4K MTP2 拓扑：
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_2v6t_4k.example.yaml \
+  /mnt/xds/mtp/spec_train/config/glm52-mtp2-2v6t-4k.yaml
+```
+
+manager 会设置 `NNODES=6` 和 `NODE_RANK=0..5`。由于 verifier 少于
+trainer，每台 trainer 都会获得两个 verifier endpoint，再由共享的在途
+token lease 在公共池中做全局负载均衡。
+
 需要自行填写或确认：
 
 - `verifier_ips` 中四台 verifier 的 IP；
-- `trainer_ips` 中两台或四台 trainer 的 IP；
+- `trainer_ips` 中两台、四台或六台 trainer 的 IP；
 - `container_mode`、容器名称、镜像和挂载列表；
 - 代码、模型、数据、hidden states、checkpoint 和日志路径；
 - 所有 `FILL_*` 占位值必须被替换；

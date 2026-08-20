@@ -1,8 +1,7 @@
 # Train GLM-5.2 MTP3 Online on Ascend 910C Nodes
 
-This runbook supports four 16-NPU verifier nodes plus either four trainer nodes
-(64-rank FSDP) or two trainer nodes (32-rank FSDP). Existing 4V4T behavior is
-unchanged.
+This runbook supports 4V4T (64-rank FSDP), 4V2T (32-rank FSDP), and 2V6T
+(96-rank FSDP). Existing 4V4T behavior is unchanged.
 
 The intended data lifecycle is:
 
@@ -70,13 +69,24 @@ No other switch is needed. The manager sets `NNODES=2`; local ranks on trainer
 All four verifier nodes therefore remain active. With 4V4T, trainer `i` still
 uses verifier `i`.
 
+For the 4K MTP2 two-verifier/six-trainer topology, use:
+
+```bash
+cp examples/train/mtp_glm52_ascend_online_2v6t_4k.example.yaml \
+  /mnt/xds/mtp/spec_train/config/glm52-mtp2-2v6t-4k.yaml
+```
+
+The manager sets `NNODES=6` and `NODE_RANK=0..5`. Since there are fewer
+verifiers than trainers, every trainer receives both verifier endpoints; the
+shared in-flight-token leases balance requests across that common pool.
+
 The shared configuration is:
 
 ```text
 /mnt/xds/mtp/spec_train/config/glm52-mtp3-4v4t.yaml
 ```
 
-It explicitly contains four verifier IPs, two or four trainer IPs, image,
+It explicitly contains verifier IPs, two, four, or six trainer IPs, image,
 container mode, container mounts, repository, model/data/output paths,
 32K sizing, and per-role installation policy. Replace every `FILL_*` value.
 

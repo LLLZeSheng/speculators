@@ -15,6 +15,9 @@ TEMPLATE_8K = (
 TEMPLATE_4K = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_online_4v4t_4k.example.yaml"
 )
+TEMPLATE_2V6T_4K = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_online_2v6t_4k.example.yaml"
+)
 TEMPLATE_OFFLINE_8V = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml"
 )
@@ -90,6 +93,16 @@ def _write_4k_yaml(path: Path) -> None:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_2v6t_4k_yaml(path: Path) -> None:
+    text = TEMPLATE_2V6T_4K.read_text(encoding="utf-8")
+    for index in range(2):
+        text = text.replace(f"FILL_VERIFIER_{index}_IP", f"10.0.0.{index + 1}")
+    for index in range(6):
+        text = text.replace(f"FILL_TRAINER_{index}_IP", f"10.0.1.{index + 1}")
+    text = text.replace("FILL_UNIQUE_SMOKE_ID", "unit-test-2v6t-4k")
     path.write_text(text, encoding="utf-8")
 
 
@@ -223,7 +236,7 @@ def test_manager_supports_collection_only_eight_verifiers(tmp_path: Path):
         env={**os.environ, "MANAGER_DRY_RUN": "1"},
     )
     assert train.returncode != 0
-    assert "requires exactly two or four trainer_ips" in train.stderr
+    assert "requires exactly two, four, or six trainer_ips" in train.stderr
 
 
 def test_hidden_state_verifier_does_not_enable_pd_mixed_balancing():
@@ -359,6 +372,34 @@ def test_manager_supports_four_verifiers_and_two_trainers(tmp_path: Path):
     assert "10.0.0.3" in result.stdout
     assert "VERIFIER_HOSTS=10.0.0.2" in result.stdout
     assert "10.0.0.4" in result.stdout
+
+
+def test_manager_supports_two_verifiers_and_six_trainers(tmp_path: Path):
+    config = tmp_path / "cluster-2v6t-4k.yaml"
+    _write_2v6t_4k_yaml(config)
+
+    validate = subprocess.run(
+        ["bash", str(MANAGER), "validate-config", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "VERIFIERS=2" in validate.stdout
+    assert "TRAINERS=6" in validate.stdout
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "train", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MANAGER_DRY_RUN": "1"},
+    )
+    assert result.stdout.count("[ssh]") == 6
+    assert "NNODES=6" in result.stdout
+    for rank in range(6):
+        assert f"NODE_RANK={rank}" in result.stdout
+    assert result.stdout.count("VERIFIER_HOSTS=10.0.0.1") == 6
+    assert result.stdout.count("10.0.0.2") >= 6
 
 
 def test_start_verifiers_skips_healthy_nodes(tmp_path: Path):

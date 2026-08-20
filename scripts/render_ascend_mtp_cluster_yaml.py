@@ -47,6 +47,7 @@ SCALAR_MAP = {
     "num_speculative_steps": "NUM_SPECULATIVE_STEPS",
     "total_seq_len": "TOTAL_SEQ_LEN",
     "smoke_seq_len": "SMOKE_SEQ_LEN",
+    "smoke_samples": "SMOKE_SAMPLES",
     "request_timeout": "REQUEST_TIMEOUT",
     "max_retries": "MAX_RETRIES",
     "num_workers": "NUM_WORKERS",
@@ -157,12 +158,12 @@ def validate(config: dict[str, str | list[str]]) -> None:
     trainer_ips = config.get("trainer_ips")
     if (
         not isinstance(trainer_ips, list)
-        or len(trainer_ips) not in {0, 2, 4}
+        or len(trainer_ips) not in {0, 2, 4, 6}
         or not all(trainer_ips)
     ):
         raise ValueError(
             "trainer_ips must be empty for collection-only configs or contain "
-            "exactly two or four non-empty addresses"
+            "exactly two, four, or six non-empty addresses"
         )
     all_ips = [  # type: ignore[misc]
         *config["verifier_ips"],
@@ -300,6 +301,14 @@ def validate(config: dict[str, str | list[str]]) -> None:
             raise ValueError("smoke_seq_len must be a positive integer")
         if not 0 < int(smoke_seq_len) <= numbers["total_seq_len"]:
             raise ValueError("smoke_seq_len must be in [1, total_seq_len]")
+    if "smoke_samples" in config:
+        smoke_samples = config["smoke_samples"]
+        if (
+            not isinstance(smoke_samples, str)
+            or not smoke_samples.isdigit()
+            or int(smoke_samples) <= 0
+        ):
+            raise ValueError("smoke_samples must be a positive integer")
     if numbers["verifier_max_model_len"] <= numbers["total_seq_len"]:
         raise ValueError("verifier_max_model_len must exceed total_seq_len")
     if (

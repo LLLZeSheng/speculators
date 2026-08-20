@@ -63,8 +63,17 @@ array_is_declared() {
 verifier_hosts_for_trainer() {
     local trainer_index=$1
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
+    local verifier_count=${#CLUSTER_VERIFIER_IPS[@]}
     local verifier_index
     local -a selected=()
+    # With fewer verifiers than trainers, partitioning would leave some
+    # trainers without an endpoint. Give every trainer the complete verifier
+    # pool and let the shared in-flight-token leases balance requests globally.
+    if ((verifier_count < trainer_count)); then
+        local IFS=,
+        printf '%s' "${CLUSTER_VERIFIER_IPS[*]}"
+        return
+    fi
     for verifier_index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
         if ((verifier_index % trainer_count == trainer_index)); then
             selected+=("${CLUSTER_VERIFIER_IPS[$verifier_index]}")
@@ -85,8 +94,9 @@ resolve_cluster_role() {
     ((${#CLUSTER_VERIFIER_IPS[@]} >= 1)) || \
         fail "CLUSTER_VERIFIER_IPS must contain at least one address"
     local trainer_count=${#CLUSTER_TRAINER_IPS[@]}
-    ((trainer_count == 0 || trainer_count == 2 || trainer_count == 4)) || \
-        fail "CLUSTER_TRAINER_IPS must be empty or contain exactly two or four addresses"
+    ((trainer_count == 0 || trainer_count == 2 || \
+       trainer_count == 4 || trainer_count == 6)) || \
+        fail "CLUSTER_TRAINER_IPS must be empty or contain exactly two, four, or six addresses"
     case "$TRAINER_MODE" in
         smoke | trainer) ;;
         *) fail "TRAINER_MODE must be smoke or trainer" ;;
