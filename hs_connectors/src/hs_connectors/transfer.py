@@ -120,6 +120,8 @@ class HiddenStatesBackend(ABC):
 
 
 _STALE_READ_ATTEMPTS = 5
+_GENERATED_FILE_APPEAR_TIMEOUT = 120.0
+_GENERATED_FILE_POLL_INTERVAL = 0.1
 
 
 def _is_stale_file_handle(error: BaseException) -> bool:
@@ -128,32 +130,75 @@ def _is_stale_file_handle(error: BaseException) -> bool:
     ) or "stale file handle" in str(error).lower()
 
 
-def _load_hs_file(file_path: Path) -> dict[str, torch.Tensor] | None:
+def _is_incomplete_publication(error: BaseException) -> bool:
+    message = str(error).lower()
+    return isinstance(error, (FileNotFoundError, EOFError)) or any(
+        marker in message
+        for marker in (
+            "incomplete metadata",
+            "invalid header",
+            "header too small",
+            "metadata incomplete",
+        )
+    )
+
+
+def _load_hs_file(
+    file_path: Path,
+    *,
+    appearance_timeout: float = 0.0,
+) -> dict[str, torch.Tensor] | None:
     """Load a complete payload and detach it from the shared-file mmap.
 
     safetensors uses mmap-backed CPU tensors.  Deleting or moving the generated
     file immediately after ``load_file`` is safe on a local POSIX filesystem,
     but distributed filesystems may invalidate the still-lazy mapping with
-    ESTALE.  Clone every tensor before returning and retry short-lived ESTALE
-    failures caused by metadata propagation on the shared filesystem.
+    ESTALE. Clone every tensor before returning and retry short-lived ESTALE
+    failures caused by metadata propagation on the shared filesystem. Freshly
+    generated handles may additionally wait for asynchronous publication; cache
+    misses remain immediate.
     """
     lock_path = str(file_path) + ".lock"
-    for attempt in range(_STALE_READ_ATTEMPTS):
+    appearance_deadline = time.monotonic() + appearance_timeout
+    stale_attempt = 0
+    while True:
         try:
             if Path(lock_path).exists():
-                wait_for_lock(lock_path)
+                # The connector creates the lock before dispatching its async
+                # safetensors save. For a freshly generated handle, allow the
+                # writer the same bounded publication window as file appearance.
+                remaining = appearance_deadline - time.monotonic()
+                wait_for_lock(
+                    lock_path,
+                    timeout=max(10.0, remaining) if appearance_timeout else 10.0,
+                )
 
             if not file_path.exists():
+                # vLLM returns the request handle before a remote filesystem is
+                # required to expose the newly-created lock/file to another
+                # host. Cached reads must remain non-blocking, but generated
+                # handles get a bounded metadata-propagation window.
+                if appearance_timeout and time.monotonic() < appearance_deadline:
+                    time.sleep(_GENERATED_FILE_POLL_INTERVAL)
+                    continue
                 return None
 
             mmap_tensors = load_file(file_path)
             return {name: tensor.clone() for name, tensor in mmap_tensors.items()}
         except Exception as error:  # noqa: BLE001 - filesystem boundary
-            if not _is_stale_file_handle(error) or attempt + 1 == _STALE_READ_ATTEMPTS:
+            if (
+                appearance_timeout
+                and time.monotonic() < appearance_deadline
+                and _is_incomplete_publication(error)
+            ):
+                time.sleep(_GENERATED_FILE_POLL_INTERVAL)
+                continue
+            if not _is_stale_file_handle(error):
                 raise
-            time.sleep(0.1 * (attempt + 1))
-
-    raise AssertionError("unreachable")
+            stale_attempt += 1
+            if stale_attempt == _STALE_READ_ATTEMPTS:
+                raise
+            time.sleep(0.1 * stale_attempt)
 
 
 class FileTransfer(HiddenStatesTransfer):
@@ -167,7 +212,10 @@ class FileTransfer(HiddenStatesTransfer):
         return _load_hs_file(path)
 
     def get_generated(self, handle: str) -> dict[str, torch.Tensor] | None:
-        return _load_hs_file(Path(handle))
+        return _load_hs_file(
+            Path(handle),
+            appearance_timeout=_GENERATED_FILE_APPEAR_TIMEOUT,
+        )
 
     def cache(self, handle: str, file_idx: int) -> None:
         self.hidden_states_path.mkdir(parents=True, exist_ok=True)
