@@ -128,7 +128,14 @@ class ChunkedGlmMoeExperts(nn.Module):
     ) -> torch.Tensor:
         output = torch.zeros_like(hidden_states)
         for chunk in self.chunks:
-            output = output + chunk(hidden_states, top_k_index, top_k_weights)
+            # Do not build a chain of full-sized ``output + chunk_output``
+            # tensors.  With a 4K x 6144 hidden state each link is about
+            # 48 MiB, so fine-grained expert sharding (for example 128 units)
+            # can retain several GiB during activation-checkpoint recompute.
+            # Addition backward does not need the previous output value, so a
+            # single in-place accumulation buffer preserves the gradients while
+            # bounding this part of the peak independently of the chunk count.
+            output.add_(chunk(hidden_states, top_k_index, top_k_weights))
         return output
 
 

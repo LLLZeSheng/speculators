@@ -67,6 +67,34 @@ def test_chunked_experts_match_packed_forward_and_backward():
     )
 
 
+def test_chunked_experts_backward_with_one_expert_per_unit():
+    """Fine-grained units must support repeated in-place accumulation."""
+    torch.manual_seed(11)
+    packed = _PackedExperts(num_experts=8, hidden_dim=6, intermediate_dim=3)
+    chunked = ChunkedGlmMoeExperts(copy.deepcopy(packed), experts_per_unit=1)
+
+    top_k_index = torch.tensor([[0, 7], [1, 6], [2, 5], [3, 4]])
+    top_k_weights = torch.rand(4, 2)
+    packed_input = torch.randn(4, 6, requires_grad=True)
+    chunked_input = packed_input.detach().clone().requires_grad_(True)
+
+    packed_output = packed(packed_input, top_k_index, top_k_weights)
+    chunked_output = chunked(chunked_input, top_k_index, top_k_weights)
+    torch.testing.assert_close(chunked_output, packed_output)
+
+    packed_output.sum().backward()
+    chunked_output.sum().backward()
+    torch.testing.assert_close(chunked_input.grad, packed_input.grad)
+    torch.testing.assert_close(
+        torch.cat([chunk.gate_up_proj.grad for chunk in chunked.chunks]),
+        packed.gate_up_proj.grad,
+    )
+    torch.testing.assert_close(
+        torch.cat([chunk.down_proj.grad for chunk in chunked.chunks]),
+        packed.down_proj.grad,
+    )
+
+
 def test_chunked_experts_bound_each_parameter_group():
     packed = _PackedExperts(num_experts=7, hidden_dim=6, intermediate_dim=3)
     chunked = ChunkedGlmMoeExperts(packed, experts_per_unit=3)
