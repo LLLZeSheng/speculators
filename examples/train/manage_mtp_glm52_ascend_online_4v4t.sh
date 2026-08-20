@@ -26,9 +26,11 @@ Commands:
   collect-offline  Start one resumable collector per configured verifier.
   offline-status   Show collector jobs, logs, and current cache file count.
   verify-offline   Require a complete cache and publish .offline-ready.json.
+  wait-offline     Wait for collectors, verify the cache, and publish readiness.
   smoke            Start the two-step smoke job on all trainer nodes.
   train            Start the production online-cache training job.
   offline          Resume using only cached hidden states.
+  production       Collect a complete cache, then start pure-offline training.
   status           Show matching containers and recent host-wrapper logs.
   dashboard        Start the control-node web dashboard.
   dashboard-status Show dashboard process, URL, and log location.
@@ -127,6 +129,8 @@ load_config() {
     DASHBOARD_LOG_FILE=${DASHBOARD_LOG_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.log}
     DASHBOARD_PID_FILE=${DASHBOARD_PID_FILE:-$ORCHESTRATOR_LOG_ROOT/mtp-dashboard.pid}
     OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-1}
+    OFFLINE_COLLECTION_WRITE_CONCURRENCY=${OFFLINE_COLLECTION_WRITE_CONCURRENCY:-1}
+    OFFLINE_COLLECTION_SCHEDULE=${OFFLINE_COLLECTION_SCHEDULE:-static}
     OFFLINE_COLLECTION_MAX_SAMPLES=${OFFLINE_COLLECTION_MAX_SAMPLES:-0}
     OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
 }
@@ -380,6 +384,10 @@ start_collectors() {
 }
 
 wait_verifiers() {
+    if [[ ${MANAGER_DRY_RUN:-0} == 1 ]]; then
+        printf '[wait-verifiers] dry-run skips health polling\n'
+        return
+    fi
     local timeout=${HEALTH_TIMEOUT:-7200}
     local started=$SECONDS
     local -a ready=()
@@ -409,6 +417,46 @@ wait_verifiers() {
             fail "timed out waiting for $remaining verifier(s)"
         sleep 15
     done
+}
+
+collector_job_is_running() {
+    local index=$1
+    local host=${CLUSTER_VERIFIER_IPS[$index]}
+    local container
+    container=$(container_for collector "$index")
+    if [[ $CONTAINER_MODE == existing ]]; then
+        local pid_file="$LOG_ROOT/runtime_pids/$container.collector$index.pid"
+        local check_command
+        check_command="docker exec $(quote "$container") bash -lc "
+        check_command+=$(quote "test -s $pid_file && pid=\$(cat $pid_file) && [[ \$pid =~ ^[0-9]+$ ]] && kill -0 \"\$pid\" 2>/dev/null")
+        remote_test "$host" "$check_command"
+    else
+        remote_test "$host" \
+            "docker inspect -f '{{.State.Running}}' $(quote "$container") 2>/dev/null | grep -qx true"
+    fi
+}
+
+wait_offline_collectors() {
+    if [[ ${MANAGER_DRY_RUN:-0} == 1 ]]; then
+        printf '[wait-offline] dry-run skips collector polling and cache validation\n'
+        return
+    fi
+    local poll=${OFFLINE_WAIT_POLL_SECONDS:-30}
+    [[ $poll =~ ^[1-9][0-9]*$ ]] || \
+        fail "OFFLINE_WAIT_POLL_SECONDS must be a positive integer"
+    local running index
+    while :; do
+        running=0
+        for index in "${!CLUSTER_VERIFIER_IPS[@]}"; do
+            if collector_job_is_running "$index"; then
+                running=$((running + 1))
+            fi
+        done
+        printf '[wait-offline] collectors_running=%d\n' "$running"
+        ((running > 0)) || break
+        sleep "$poll"
+    done
+    verify_offline_cache
 }
 
 dashboard_advertise_host() {
@@ -682,6 +730,7 @@ case "$COMMAND" in
         ;;
     offline-status) show_offline_status ;;
     verify-offline) verify_offline_cache ;;
+    wait-offline) wait_offline_collectors ;;
     smoke)
         require_trainers
         start_group smoke online-cache CLUSTER_TRAINER_IPS
@@ -699,6 +748,25 @@ case "$COMMAND" in
         else
             printf '[offline] dry-run skips cache validation\n'
         fi
+        start_group trainer offline CLUSTER_TRAINER_IPS
+        start_dashboard
+        ;;
+    production)
+        require_trainers
+        # Production collection depends on the exact connector patch, local
+        # staging path, and allocator limits from this config. A merely healthy
+        # old process may have none of them, so always perform a clean verifier
+        # rollout before creating new work claims.
+        if [[ $CONTAINER_MODE == existing ]]; then
+            restart_verifiers
+        else
+            stop_role collector CLUSTER_VERIFIER_IPS
+            stop_role verifier CLUSTER_VERIFIER_IPS
+        fi
+        start_group verifier "" CLUSTER_VERIFIER_IPS
+        wait_verifiers
+        start_collectors
+        wait_offline_collectors
         start_group trainer offline CLUSTER_TRAINER_IPS
         start_dashboard
         ;;

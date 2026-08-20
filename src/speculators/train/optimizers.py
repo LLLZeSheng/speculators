@@ -2,7 +2,7 @@
 
 Provides a single entry point, :func:`build_optimizers`, that returns the list of
 optimizers the trainer should drive. The default ("adamw") returns a single AdamW
-optimizer over all parameters, preserving the historical behavior. The "muon" option
+optimizer over trainable parameters. The "muon" option
 returns two optimizers: ``torch.optim.Muon`` over the 2D weight matrices (which is all
 Muon supports) and ``torch.optim.AdamW`` over everything else (norms, biases, and the
 embedding / LM-head matrices, following standard Muon practice).
@@ -67,9 +67,24 @@ def build_optimizers(model: Module, config) -> list[torch.optim.Optimizer]:
         "adamw" returns a single optimizer; "muon" returns ``[Muon, AdamW]``.
     """
     if config.optimizer == "adamw":
+        trainable_params = [
+            (name, parameter)
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        ]
+        if not trainable_params:
+            raise ValueError("No trainable parameters found to optimize.")
+        frozen_count = sum(
+            1 for parameter in model.parameters() if not parameter.requires_grad
+        )
+        logger.info(
+            "AdamW optimizer: %d trainable params; excluded %d frozen params.",
+            len(trainable_params),
+            frozen_count,
+        )
         return [
             torch.optim.AdamW(
-                model.named_parameters(),
+                trainable_params,
                 lr=config.lr,
                 weight_decay=config.weight_decay,
             )

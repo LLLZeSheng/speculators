@@ -132,6 +132,69 @@ def test_memory_efficient_forward_supports_backward(mtp_model, seed):
     )
 
 
+def test_sampled_step_matches_selected_full_loss_and_bounds_grad_graph(
+    mtp_model, seed
+):
+    """Uniform horizon sampling scales the selected weighted loss by K."""
+    hidden_size = mtp_model.config.hidden_size
+    vocab_size = mtp_model.config.vocab_size
+    num_steps = mtp_model.config.num_speculative_steps
+    input_ids = torch.randint(0, vocab_size, (BATCH, SEQ_LEN))
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+    step_weights = [0.5, 0.3, 0.2]
+    mtp_model.train()
+
+    with torch.no_grad():
+        _, _, full_metrics = mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+            step_weights=step_weights,
+            logits_chunk_size=2,
+            return_logits=False,
+        )
+
+    _, sampled_loss, sampled_metrics = mtp_model(
+        input_ids=input_ids,
+        hidden_states=hidden_states,
+        step_weights=step_weights,
+        training_strategy="sampled_step",
+        sampled_step=1,
+        logits_chunk_size=2,
+        return_logits=False,
+    )
+
+    assert {key for key in sampled_metrics if key.startswith("loss_step_")} == {
+        "loss_step_1"
+    }
+    torch.testing.assert_close(sampled_loss, sampled_metrics["loss_step_1"])
+    torch.testing.assert_close(
+        sampled_loss,
+        full_metrics["loss_step_1"] * num_steps,
+    )
+    assert sampled_metrics["accepted_draft_len_total"] == 0
+    sampled_loss.backward()
+    assert any(
+        parameter.grad is not None
+        for parameter in mtp_model.mtp_layers.parameters()
+        if parameter.requires_grad
+    )
+    assert num_steps == 3
+
+
+def test_sampled_step_rejects_missing_or_out_of_range_horizon(mtp_model, seed):
+    hidden_size = mtp_model.config.hidden_size
+    vocab_size = mtp_model.config.vocab_size
+    input_ids = torch.randint(0, vocab_size, (BATCH, SEQ_LEN))
+    hidden_states = torch.randn(BATCH, SEQ_LEN, hidden_size)
+
+    with pytest.raises(ValueError, match="sampled_step must be"):
+        mtp_model(
+            input_ids=input_ids,
+            hidden_states=hidden_states,
+            training_strategy="sampled_step",
+        )
+
+
 def test_memory_efficient_head_has_one_fsdp_lifecycle(mtp_model, seed):
     """All steps/chunks share one head call (plus one checkpoint recompute)."""
     hidden_size = mtp_model.config.hidden_size

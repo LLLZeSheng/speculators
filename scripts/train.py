@@ -744,6 +744,7 @@ def main(cfg: TrainConfig):  # noqa: C901
         save_best=args.save_best,
         hidden_states_dtype=hidden_states_dtype,
         log_freq=args.log_freq,
+        memory_log_freq=args.memory_log_freq,
         fsdp_shard=args.fsdp_shard,
         fsdp_skip_initial_broadcast=args.fsdp_skip_initial_broadcast,
         fsdp_wrap_policy=args.fsdp_wrap_policy,

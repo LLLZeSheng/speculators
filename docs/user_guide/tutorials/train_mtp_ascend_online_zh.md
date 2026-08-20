@@ -584,6 +584,59 @@ offline_validation_samples: 8
 当前 verifier 的 `max_num_seqs` 为 1，因此 collector 并发默认也是 1。提高并发
 前应同步提高 verifier 的请求容量，并确认 NFS 写入没有成为瓶颈。
 
+### 推荐的生产模式：本地生成、动态采集、纯离线训练
+
+4K MTP3 建议直接使用：
+
+```bash
+cp examples/train/mtp_glm52_ascend_production_4v4t_4k.example.yaml \
+  /mnt/xds/mtp/spec_train/config/mtp_glm52_production_4v4t_4k.yaml
+# 填写 IP、容器名和 smoke_run_id 后：
+MANAGER=examples/train/manage_mtp_glm52_ascend_online_4v4t.sh
+CONFIG=/mnt/xds/mtp/spec_train/config/mtp_glm52_production_4v4t_4k.yaml
+bash "$MANAGER" validate-config --config "$CONFIG"
+bash "$MANAGER" production --config "$CONFIG"
+```
+
+`production` 会干净重启全部 verifier，确保新 connector 补丁和显存参数真正
+生效；随后等待健康检查，启动动态 collector，等待并验证完整缓存，最后才启动
+不访问 verifier 的 FSDP trainer。采集或训练失败后可重复执行，已经原子发布的
+`hs_<index>.safetensors` 会被复用。
+
+该 profile 将 verifier 输出先写入每台机器的
+`/tmp/speculators-glm52-hidden-states`。collector 校验 token/hidden-state 后，以
+`.partial -> hs_<index>.safetensors` 原子发布到共享目录。这样 vLLM 的保存线程
+不再被 NFS 延迟阻塞。动态目录 claim 允许空闲 verifier 接管慢节点尚未领取的
+样本；请求并发和共享盘写并发分别由以下配置控制：
+
+```yaml
+verifier_staging_path: /tmp/speculators-glm52-hidden-states
+offline_collection_schedule: dynamic
+offline_collection_concurrency: 2
+offline_collection_write_concurrency: 1
+offline_collection_poll_interval: 30
+```
+
+训练侧使用 `mtp_training_strategy: sampled_step`。MTP3 仍然训练三个预测距离，
+但每个 optimizer step 只为一个距离保留梯度图，按 step 0/1/2 轮换，并把该项
+loss 乘以 3；因此它是原加权三步目标的均匀随机无偏估计。前置递归状态仍由
+同一个 MTP 层按 teacher forcing 精确计算，只是不保存其 autograd 图。验证始终
+使用完整三步展开。这里无偏的是 loss 值；梯度不会穿过前置递归 horizon，属于
+截断反向传播。相较一次反向同时保留三个 GLM-MoE 图，这能显著降低峰值：
+
+```yaml
+mtp_training_strategy: sampled_step
+mtp_activation_checkpointing: false
+fsdp_experts_per_unit: 2
+mtp_logits_chunk_size: 128
+memory_log_freq: 1
+```
+
+这里 `total_seq_len: 4096` 是每 rank 的 packed token budget，collate 后张量形状
+是 `[1, 4096, ...]`；它不是“4 个样本各 4096 token”。因此普通 batch-size
+开关不能继续拆分一个 4K packed sequence。上述 sampled horizon、分块词表头、
+细粒度 expert FSDP 和纯离线输入才是这条路径的主要显存/稳定性手段。
+
 epoch 1 已完整遍历训练集和验证集后，可以使用：
 
 ```bash
@@ -710,6 +763,8 @@ CP=8 时，1024-token prompt 只会写出 128 行 hidden states，但 token_ids 
 TP gather 也会按各 rank 的真实 token 数移除对齐 padding；例如 TP16 下的
 959-token 请求即使以 16 个 63-token 缓冲区 gather 成 1008 行，也会在验证
 shard/副本布局后移除全局 token 流末尾的 49 行调度 padding，还原为 959 行。
+所有 TP rank 仍会参加 gather，但只有 TP rank 0 执行 D2H 和文件发布；TP16
+因此从每个请求 16 次重复保存降为 1 次，避免本地盘或 NFS 上的重复写和锁竞争。
 
 成功标准：
 

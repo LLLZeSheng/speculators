@@ -26,6 +26,38 @@ class _Progress:
 
 
 class DataGenerationOfflineWorkerTest(unittest.IsolatedAsyncioTestCase):
+    def test_dynamic_candidates_prefer_local_shard_then_allow_work_stealing(self):
+        module = load_data_generation_offline_module()
+        assert module._dynamic_candidates(10, None, {1, 8}, 3, 1) == [
+            4,
+            7,
+            2,
+            5,
+            0,
+            3,
+            6,
+            9,
+        ]
+
+    def test_dynamic_claim_is_exclusive_and_released(self):
+        module = load_data_generation_offline_module()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            first = module._try_claim_index(output, 7, claim_timeout=60)
+            assert first is not None
+            assert module._try_claim_index(output, 7, claim_timeout=60) is None
+            module._release_claim(first)
+            second = module._try_claim_index(output, 7, claim_timeout=60)
+            assert second is not None
+            module._release_claim(second)
+
+    def test_dynamic_claim_skips_already_published_file(self):
+        module = load_data_generation_offline_module()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            (output / "hs_3.safetensors").touch()
+            assert module._try_claim_index(output, 3, claim_timeout=60) is None
+
     def test_validate_and_commit_publishes_only_finite_files(self):
         module = load_data_generation_offline_module()
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -127,6 +159,49 @@ class DataGenerationOfflineWorkerTest(unittest.IsolatedAsyncioTestCase):
                 "timeout": 600,
             }
             assert (output_path / "hs_131.safetensors").is_file()
+
+    async def test_fatal_worker_error_releases_dynamic_claim(self):
+        module = load_data_generation_offline_module()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory)
+            claim = module._try_claim_index(output_path, 5, claim_timeout=60)
+            assert claim is not None
+            queue = asyncio.Queue()
+            queue.put_nowait(
+                {
+                    "idx": 5,
+                    "input_ids": [1, 2],
+                    "claim_path": str(claim),
+                }
+            )
+            cancel_event = asyncio.Event()
+
+            async def fail_generate(*_args, **_kwargs):
+                raise ConnectionError("verifier unavailable")
+
+            with (
+                patch.object(module, "generate_hidden_states_async", fail_generate),
+                pytest.raises(RuntimeError, match="fail-on-error"),
+            ):
+                await module.worker(
+                    client=object(),
+                    model="glm-5.2",
+                    queue=queue,
+                    pbar=_Progress(),
+                    vllm_semaphore=asyncio.Semaphore(1),
+                    write_semaphore=asyncio.Semaphore(1),
+                    hidden_states_output_dir=output_path,
+                    validate_outputs=False,
+                    request_timeout=10,
+                    max_retries=0,
+                    fail_on_error=True,
+                    skipped_indices=[],
+                    cancel_event=cancel_event,
+                    failure_tracker=None,
+                )
+
+            assert cancel_event.is_set()
+            assert not claim.exists()
 
 
 if __name__ == "__main__":

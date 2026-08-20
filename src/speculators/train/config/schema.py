@@ -202,6 +202,18 @@ class DraftArgs(_Group):
         description="Recompute the MTP transformer layer during backward to reduce "
         "activation memory.",
     )
+    mtp_training_strategy: Literal["full_unroll", "sampled_step"] = Field(
+        default="full_unroll",
+        description=(
+            "MTP gradient strategy. 'full_unroll' backpropagates through every "
+            "speculative step. 'sampled_step' deterministically rotates one "
+            "prediction horizon per optimizer step, runs earlier recurrent states "
+            "without gradients, and scales the selected loss into an unbiased "
+            "uniform-step estimate of the full loss value. Gradients are truncated "
+            "through earlier recurrent horizons. This substantially lowers GLM-MoE "
+            "activation memory while still training every MTP horizon."
+        ),
+    )
 
 
 class DataArgs(_Group):
@@ -433,6 +445,15 @@ class TrainerArgs(_Group):
     )
     log_freq: int = Field(
         default=1, description="Log training metrics every N steps (default: 1)."
+    )
+    memory_log_freq: int = Field(
+        default=10,
+        ge=0,
+        description=(
+            "Log accelerator allocated/reserved/peak/free memory every N optimizer "
+            "steps; 0 disables periodic memory telemetry. OOM diagnostics are "
+            "always emitted."
+        ),
     )
     save_path: str = Field(
         default="./output/checkpoints",

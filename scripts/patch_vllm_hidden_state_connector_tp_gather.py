@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Restore TP-sharded hidden states at the connector's save boundary.
+"""Restore TP-sharded hidden states and publish them from one TP worker.
 
 The request metadata contains the complete prompt token ids, while Ascend may
 expose only the local sequence shard through the cache-only layer.  Repair the
 tensor where both lengths are visible, before a short safetensors file can be
-published to an online trainer.
+published to an online trainer.  Every TP worker participates in the gather,
+but only TP rank zero performs the DtoH copy and filesystem write.  This avoids
+TP-wide duplicate writes and lock contention on a shared or local filesystem.
 """
 
 from __future__ import annotations
@@ -21,10 +23,18 @@ DEFAULT_TARGET = Path(
     "/vllm-workspace/vllm/vllm/distributed/kv_transfer/kv_connector/v1/"
     "example_hidden_states_connector.py"
 )
-PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V2"
+PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V3"
+PREVIOUS_PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V2"
 LEGACY_PATCH_MARKER = "SPECULATORS_HS_CONNECTOR_TP_GATHER_V1"
 IMPORT_ANCHOR = "from vllm.forward_context import get_forward_context\n"
 IMPORT_REPLACEMENT = (
+    "from vllm.distributed import (\n"
+    "    get_tensor_model_parallel_rank,\n"
+    "    tensor_model_parallel_all_gather,\n"
+    ")\n"
+    + IMPORT_ANCHOR
+)
+PREVIOUS_IMPORT_REPLACEMENT = (
     "from vllm.distributed import tensor_model_parallel_all_gather\n"
     + IMPORT_ANCHOR
 )
@@ -94,10 +104,10 @@ LEGACY_REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cac
                 # Async DtoH copy into pinned host memory.
 """
 
-REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
+PREVIOUS_REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
                     kv_layer, req_slot_mapping_gpu, num_tokens
                 )
-                # {PATCH_MARKER}: request.token_ids is the authoritative full
+                # {PREVIOUS_PATCH_MARKER}: request.token_ids is the authoritative full
                 # prompt length. Ascend sequence parallelism can leave a
                 # padded local token shard in the cache-only layer. A TP
                 # all-gather therefore need not equal num_tokens exactly: for
@@ -201,6 +211,20 @@ REPLACEMENT = f"""                hidden_states_gpu = extract_from_kv_cache(
                 # Async DtoH copy into pinned host memory.
 """
 
+REPLACEMENT = PREVIOUS_REPLACEMENT.replace(
+    PREVIOUS_PATCH_MARKER, PATCH_MARKER, 1
+).replace(
+    "                # Async DtoH copy into pinned host memory.\n",
+    "                # Every TP worker must join the collective above, but the\n"
+    "                # reconstructed tensor is identical on every rank. Only\n"
+    "                # rank zero publishes it; otherwise TP16 performs sixteen\n"
+    "                # redundant DtoH copies and contending writes per request.\n"
+    "                if get_tensor_model_parallel_rank() != 0:\n"
+    "                    continue\n"
+    "                # Async DtoH copy into pinned host memory.\n",
+    1,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -251,12 +275,39 @@ def apply(target: Path) -> int:
         return 0
     if PATCH_MARKER in text:
         raise RuntimeError("refusing to modify a partially patched source file")
+    if text.count(PREVIOUS_PATCH_MARKER) == 1:
+        for name, anchor in (
+            ("v2 import", PREVIOUS_IMPORT_REPLACEMENT),
+            ("v2 save", PREVIOUS_REPLACEMENT),
+        ):
+            if text.count(anchor) != 1:
+                raise RuntimeError(
+                    f"unsupported v2 connector patch: {name} is not unique"
+                )
+        patched = text.replace(
+            PREVIOUS_IMPORT_REPLACEMENT, IMPORT_REPLACEMENT, 1
+        ).replace(PREVIOUS_REPLACEMENT, REPLACEMENT, 1)
+        compile(patched, str(target), "exec")
+        atomic_write(target, patched)
+        print(
+            f"PATCH_STATUS=upgraded\nTARGET={target}\nBACKUP={backup_path(target)}"
+            "\nRESTART_REQUIRED=yes"
+        )
+        return 0
+    if PREVIOUS_PATCH_MARKER in text:
+        raise RuntimeError("refusing to modify a partially patched v2 source file")
     if text.count(LEGACY_PATCH_MARKER) == 1:
         if text.count(LEGACY_REPLACEMENT) != 1:
             raise RuntimeError(
                 "unsupported legacy connector patch: replacement is not unique"
             )
-        patched = text.replace(LEGACY_REPLACEMENT, REPLACEMENT, 1)
+        if text.count(PREVIOUS_IMPORT_REPLACEMENT) != 1:
+            raise RuntimeError(
+                "unsupported legacy connector patch: import is not unique"
+            )
+        patched = text.replace(
+            PREVIOUS_IMPORT_REPLACEMENT, IMPORT_REPLACEMENT, 1
+        ).replace(LEGACY_REPLACEMENT, REPLACEMENT, 1)
         compile(patched, str(target), "exec")
         atomic_write(target, patched)
         print(

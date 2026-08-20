@@ -202,6 +202,46 @@ def test_offline_collector_uses_resumable_four_way_partition():
     assert "--max-samples" not in command
 
 
+def test_offline_collector_supports_dynamic_claims_and_bounded_publication():
+    result = _run(
+        "collector",
+        VERIFIER_ID="1",
+        OFFLINE_COLLECTION_RANK="1",
+        OFFLINE_COLLECTION_WORLD_SIZE="4",
+        OFFLINE_COLLECTION_CONCURRENCY="2",
+        OFFLINE_COLLECTION_WRITE_CONCURRENCY="1",
+        OFFLINE_COLLECTION_SCHEDULE="dynamic",
+        OFFLINE_COLLECTION_CLAIM_TIMEOUT="1200",
+        OFFLINE_COLLECTION_POLL_INTERVAL="15",
+        VERIFIER_HIDDEN_STATES_PATH="/tmp/verifier-staging",
+        TRAINER_DATA_MODE="offline",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = next(
+        line
+        for line in result.stdout.splitlines()
+        if "data_generation_offline.py" in line
+    )
+    assert "--concurrency 2" in command
+    assert "--write-concurrency 1" in command
+    assert "--schedule dynamic" in command
+    assert "--claim-timeout 1200" in command
+    assert "--schedule-poll-interval 15" in command
+
+
+def test_online_training_rejects_node_local_verifier_staging():
+    result = _run(
+        "trainer",
+        TRAINER_DATA_MODE="online-cache",
+        HIDDEN_STATES_PATH="/shared/cache",
+        VERIFIER_HIDDEN_STATES_PATH="/tmp/verifier-staging",
+    )
+
+    assert result.returncode != 0
+    assert "node-local verifier staging" in result.stderr
+
+
 def test_verifier_preflight_uses_dp_times_tp_device_count():
     result = _run(
         "verifier", VERIFIER_TP_SIZE="8", VERIFIER_DP_SIZE="1", NPROC_PER_NODE="16"

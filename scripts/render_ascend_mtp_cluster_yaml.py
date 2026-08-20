@@ -31,6 +31,7 @@ SCALAR_MAP = {
     "mtp_init_model_path": "MTP_INIT_MODEL_PATH",
     "data_path": "DATA_PATH",
     "hidden_states_path": "HIDDEN_STATES_PATH",
+    "verifier_staging_path": "VERIFIER_HIDDEN_STATES_PATH",
     "output_path": "OUTPUT_PATH",
     "log_root": "LOG_ROOT",
     "dashboard_host": "DASHBOARD_HOST",
@@ -53,6 +54,10 @@ SCALAR_MAP = {
     "num_workers": "NUM_WORKERS",
     "prefetch_factor": "PREFETCH_FACTOR",
     "offline_collection_concurrency": "OFFLINE_COLLECTION_CONCURRENCY",
+    "offline_collection_write_concurrency": "OFFLINE_COLLECTION_WRITE_CONCURRENCY",
+    "offline_collection_schedule": "OFFLINE_COLLECTION_SCHEDULE",
+    "offline_collection_claim_timeout": "OFFLINE_COLLECTION_CLAIM_TIMEOUT",
+    "offline_collection_poll_interval": "OFFLINE_COLLECTION_POLL_INTERVAL",
     "offline_collection_max_samples": "OFFLINE_COLLECTION_MAX_SAMPLES",
     "offline_validation_samples": "OFFLINE_VALIDATION_SAMPLES",
     "epochs": "EPOCHS",
@@ -62,6 +67,8 @@ SCALAR_MAP = {
     "fsdp_experts_per_unit": "FSDP_EXPERTS_PER_UNIT",
     "mtp_logits_chunk_size": "MTP_LOGITS_CHUNK_SIZE",
     "mtp_activation_checkpointing": "MTP_ACTIVATION_CHECKPOINTING",
+    "mtp_training_strategy": "MTP_TRAINING_STRATEGY",
+    "memory_log_freq": "MEMORY_LOG_FREQ",
     "startup_heartbeat_seconds": "STARTUP_HEARTBEAT_SECONDS",
     "trainer_mode": "TRAINER_MODE",
     "trainer_data_mode": "TRAINER_DATA_MODE",
@@ -261,6 +268,7 @@ def validate(config: dict[str, str | list[str]]) -> None:
             raise ValueError(f"{key} must be positive")
     for key in (
         "offline_collection_concurrency",
+        "offline_collection_write_concurrency",
         "offline_collection_max_samples",
         "offline_validation_samples",
     ):
@@ -269,8 +277,28 @@ def validate(config: dict[str, str | list[str]]) -> None:
             continue
         if not isinstance(value, str) or not value.isdigit():
             raise ValueError(f"{key} must be a non-negative integer")
-        if key == "offline_collection_concurrency" and int(value) <= 0:
-            raise ValueError("offline_collection_concurrency must be positive")
+        if key in {
+            "offline_collection_concurrency",
+            "offline_collection_write_concurrency",
+        } and int(value) <= 0:
+            raise ValueError(f"{key} must be positive")
+    if config.get("offline_collection_schedule", "static") not in {
+        "static",
+        "dynamic",
+    }:
+        raise ValueError("offline_collection_schedule must be static or dynamic")
+    for key in (
+        "offline_collection_claim_timeout",
+        "offline_collection_poll_interval",
+    ):
+        if key not in config:
+            continue
+        try:
+            interval = float(config[key])  # type: ignore[arg-type]
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{key} must be positive") from error
+        if interval <= 0:
+            raise ValueError(f"{key} must be positive")
     if numbers["verifier_dp_size"] * numbers["verifier_tp_size"] != 16:
         raise ValueError("verifier_dp_size * verifier_tp_size must equal 16")
     verifier_block_size = config.get("verifier_block_size")
@@ -331,6 +359,27 @@ def validate(config: dict[str, str | list[str]]) -> None:
         raise ValueError("trainer_mode must be smoke or trainer")
     if config.get("trainer_data_mode") not in {"online-cache", "offline"}:
         raise ValueError("trainer_data_mode must be online-cache or offline")
+    staging = config.get("verifier_staging_path")
+    if (
+        isinstance(staging, str)
+        and staging
+        and staging != config.get("hidden_states_path")
+        and config.get("trainer_data_mode") != "offline"
+    ):
+        raise ValueError(
+            "node-local verifier_staging_path requires trainer_data_mode=offline; "
+            "online trainers cannot read verifier-local request handles"
+        )
+    if (
+        isinstance(staging, str)
+        and staging
+        and staging != config.get("hidden_states_path")
+        and config.get("container_mode") != "existing"
+    ):
+        raise ValueError(
+            "node-local verifier_staging_path requires container_mode=existing "
+            "so the colocated collector sees the verifier container filesystem"
+        )
     if "dashboard_auto_start" in config:
         value = config["dashboard_auto_start"]
         if not isinstance(value, str):
@@ -346,6 +395,13 @@ def validate(config: dict[str, str | list[str]]) -> None:
         "memory_efficient",
     }:
         raise ValueError("fsdp_wrap_policy must be layer or memory_efficient")
+    if config.get("mtp_training_strategy", "full_unroll") not in {
+        "full_unroll",
+        "sampled_step",
+    }:
+        raise ValueError(
+            "mtp_training_strategy must be full_unroll or sampled_step"
+        )
     if "num_workers" in config:
         value = config["num_workers"]
         if not isinstance(value, str) or not value.isdigit():
@@ -360,6 +416,10 @@ def validate(config: dict[str, str | list[str]]) -> None:
             value = config[key]
             if not isinstance(value, str) or not value.isdigit() or int(value) < 1:
                 raise ValueError(f"{key} must be a positive integer")
+    if "memory_log_freq" in config:
+        value = config["memory_log_freq"]
+        if not isinstance(value, str) or not value.isdigit():
+            raise ValueError("memory_log_freq must be a non-negative integer")
     if "mtp_activation_checkpointing" in config:
         value = config["mtp_activation_checkpointing"]
         if not isinstance(value, str):

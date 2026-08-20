@@ -1,0 +1,98 @@
+# Production GLM-5.2 MTP3 profile: four verifier collectors followed by four
+# pure-offline trainer nodes. This intentionally removes verifier/NFS generation
+# from the distributed training critical path.
+version: 1
+cluster_name: glm52-production-mtp3-4v4t-4k
+
+verifier_ips:
+  - FILL_VERIFIER_0_IP
+  - FILL_VERIFIER_1_IP
+  - FILL_VERIFIER_2_IP
+  - FILL_VERIFIER_3_IP
+trainer_ips:
+  - FILL_TRAINER_0_IP
+  - FILL_TRAINER_1_IP
+  - FILL_TRAINER_2_IP
+  - FILL_TRAINER_3_IP
+
+container_image: quay.io/ascend/vllm-ascend:v0.23.0rc1-a3
+container_mode: existing
+existing_container_name: glm52-w4a8-mg13-speculator-training-lzs
+container_name_prefix: glm52-w4a8-mg13-speculator-training-lzs
+container_repo_path: /mnt/xds/mtp/spec_train/speculators
+repo_path: /mnt/xds/mtp/spec_train/speculators
+shared_root: /mnt/xds/mtp
+nic_name: auto
+
+container_mounts:
+  - /mnt/xds/sfs:/mnt/xds/sfs
+  - /mnt/xds/mtp:/mnt/xds/mtp
+  - /mnt/xds/mtp/spec_train/speculators:/mnt/xds/mtp/spec_train/speculators
+  - /root/.cache:/root/.cache
+
+verifier_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+verifier_source_model_path: /mnt/xds/sfs/GLM-5.2-W4A8-MG13/v1
+verifier_quantization_mode: ascend
+mtp_init_model_path: /mnt/xds/sfs/l00936201/glm52-w4a8-mg13/v1-ascend-modelslim-v4
+data_path: /mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-4k
+hidden_states_path: /mnt/xds/mtp/spec_train/hidden_states/glm52-w4a8-mg13-production-4k
+# Request-scoped verifier output stays off NFS. Each collector is colocated with
+# its verifier and atomically publishes validated hs_<index> files above.
+verifier_staging_path: /tmp/speculators-glm52-hidden-states
+output_path: /mnt/xds/mtp/spec_train/ckpts/glm52-w4a8-mg13-mtp3-production-4k
+log_root: /mnt/xds/mtp/spec_train/logs/glm52-w4a8-mg13-mtp3-production-4k
+
+dashboard_host: 0.0.0.0
+dashboard_port: 6007
+dashboard_auto_start: true
+
+verifier_port: 8077
+verifier_dp_size: 1
+verifier_tp_size: 16
+verifier_block_size: 128
+verifier_max_model_len: 4097
+# Two full 4K prompts may execute together. KV demand is small at this context,
+# so keep substantial headroom for hidden-state gather and quantized MoE workspace.
+verifier_max_num_seqs: 2
+verifier_max_batched_tokens: 8224
+verifier_gpu_memory_utilization: 0.62
+
+num_speculative_steps: 3
+total_seq_len: 4096
+smoke_seq_len: 4096
+smoke_samples: 256
+request_timeout: 900
+max_retries: 2
+num_workers: 1
+prefetch_factor: 1
+
+# Dynamic NFS-safe claims let fast verifier nodes consume unfinished shards from
+# slow nodes. Request concurrency and NFS publication concurrency are independent.
+offline_collection_concurrency: 2
+offline_collection_write_concurrency: 1
+offline_collection_schedule: dynamic
+offline_collection_claim_timeout: 2400
+offline_collection_poll_interval: 30
+offline_collection_max_samples: 0
+offline_validation_samples: 16
+
+epochs: 5
+fsdp_skip_initial_broadcast: true
+fsdp_wrap_policy: memory_efficient
+fsdp_min_numel: 8000000
+fsdp_experts_per_unit: 2
+mtp_logits_chunk_size: 128
+# Full-layer checkpoint recompute can overlap a fresh FSDP unshard on Ascend.
+mtp_activation_checkpointing: false
+# Rotate one gradient-bearing horizon per step. Earlier recursive states are exact
+# no-grad computations (truncated recurrent gradient), reducing the retained
+# GLM-MoE graph from 3 passes to 1.
+mtp_training_strategy: sampled_step
+memory_log_freq: 1
+startup_heartbeat_seconds: 30
+trainer_mode: trainer
+trainer_data_mode: offline
+smoke_run_id: FILL_UNIQUE_SMOKE_ID
+
+install_speculators_verifier: false
+install_speculators_trainer: false

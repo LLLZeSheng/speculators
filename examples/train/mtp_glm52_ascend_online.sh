@@ -21,6 +21,10 @@ MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-$VERIFIER_MODEL_PATH}
 NUM_SPECULATIVE_STEPS=${NUM_SPECULATIVE_STEPS:-3}
 DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/spec_train/dataset/hf/nuoya-average2k8k-32k}
 HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-${SHARED_ROOT}/spec_train/online_hidden_states/glm52-w4a8c8}
+# For production offline collection this should be node-local storage. The
+# colocated collector publishes validated files to HIDDEN_STATES_PATH afterward.
+# Online generation must leave both paths equal because trainers read the handle.
+VERIFIER_HIDDEN_STATES_PATH=${VERIFIER_HIDDEN_STATES_PATH:-$HIDDEN_STATES_PATH}
 MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-mg13-native-mtp${NUM_SPECULATIVE_STEPS}}
 OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp${NUM_SPECULATIVE_STEPS}}
 LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp${NUM_SPECULATIVE_STEPS}}
@@ -66,6 +70,10 @@ PREFETCH_FACTOR=${PREFETCH_FACTOR:-2}
 REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-900}
 MAX_RETRIES=${MAX_RETRIES:-3}
 OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-1}
+OFFLINE_COLLECTION_WRITE_CONCURRENCY=${OFFLINE_COLLECTION_WRITE_CONCURRENCY:-1}
+OFFLINE_COLLECTION_SCHEDULE=${OFFLINE_COLLECTION_SCHEDULE:-static}
+OFFLINE_COLLECTION_CLAIM_TIMEOUT=${OFFLINE_COLLECTION_CLAIM_TIMEOUT:-3600}
+OFFLINE_COLLECTION_POLL_INTERVAL=${OFFLINE_COLLECTION_POLL_INTERVAL:-30}
 OFFLINE_COLLECTION_MAX_SAMPLES=${OFFLINE_COLLECTION_MAX_SAMPLES:-0}
 OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
 OFFLINE_COLLECTION_WORLD_SIZE=${OFFLINE_COLLECTION_WORLD_SIZE:-4}
@@ -122,6 +130,8 @@ MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-1024}
 # Keep checkpointing opt-in for generic profiles; the 4K/8K GLM templates
 # enable the tested non-reentrant MTP checkpoint path explicitly.
 MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-0}
+MTP_TRAINING_STRATEGY=${MTP_TRAINING_STRATEGY:-full_unroll}
+MEMORY_LOG_FREQ=${MEMORY_LOG_FREQ:-10}
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -186,6 +196,10 @@ validate_role() {
         fail "MTP_LOGITS_CHUNK_SIZE must be positive"
     [[ $MTP_ACTIVATION_CHECKPOINTING == 0 || $MTP_ACTIVATION_CHECKPOINTING == 1 ]] || \
         fail "MTP_ACTIVATION_CHECKPOINTING must be 0 or 1"
+    [[ $MTP_TRAINING_STRATEGY == full_unroll || $MTP_TRAINING_STRATEGY == sampled_step ]] || \
+        fail "MTP_TRAINING_STRATEGY must be full_unroll or sampled_step"
+    [[ $MEMORY_LOG_FREQ =~ ^[0-9]+$ ]] || \
+        fail "MEMORY_LOG_FREQ must be a non-negative integer"
     case "$ROLE" in
         preflight | verifier | collector | trainer) ;;
         smoke) require_value SMOKE_RUN_ID ;;
@@ -276,6 +290,7 @@ Resolved Ascend MTP configuration:
   NUM_SPECULATIVE_STEPS=$NUM_SPECULATIVE_STEPS
   DATA_PATH=$DATA_PATH
   HIDDEN_STATES_PATH=$HIDDEN_STATES_PATH
+  VERIFIER_HIDDEN_STATES_PATH=$VERIFIER_HIDDEN_STATES_PATH
   MTP_DRAFT_PATH=$MTP_DRAFT_PATH
   OUTPUT_PATH=$OUTPUT_PATH
   LOG_ROOT=$LOG_ROOT
@@ -297,7 +312,11 @@ Resolved Ascend MTP configuration:
   FSDP_WRAP_POLICY=$FSDP_WRAP_POLICY FSDP_MIN_NUMEL=$FSDP_MIN_NUMEL
   FSDP_EXPERTS_PER_UNIT=$FSDP_EXPERTS_PER_UNIT
   MTP_LOGITS_CHUNK_SIZE=$MTP_LOGITS_CHUNK_SIZE MTP_ACTIVATION_CHECKPOINTING=$MTP_ACTIVATION_CHECKPOINTING
+  MTP_TRAINING_STRATEGY=$MTP_TRAINING_STRATEGY MEMORY_LOG_FREQ=$MEMORY_LOG_FREQ
   OFFLINE_COLLECTION_CONCURRENCY=$OFFLINE_COLLECTION_CONCURRENCY
+  OFFLINE_COLLECTION_WRITE_CONCURRENCY=$OFFLINE_COLLECTION_WRITE_CONCURRENCY
+  OFFLINE_COLLECTION_SCHEDULE=$OFFLINE_COLLECTION_SCHEDULE OFFLINE_COLLECTION_CLAIM_TIMEOUT=$OFFLINE_COLLECTION_CLAIM_TIMEOUT
+  OFFLINE_COLLECTION_POLL_INTERVAL=$OFFLINE_COLLECTION_POLL_INTERVAL
   OFFLINE_COLLECTION_MAX_SAMPLES=$OFFLINE_COLLECTION_MAX_SAMPLES
   OFFLINE_COLLECTION_WORLD_SIZE=$OFFLINE_COLLECTION_WORLD_SIZE OFFLINE_COLLECTION_RANK=$OFFLINE_COLLECTION_RANK
 EOF
@@ -452,6 +471,7 @@ run_verifier() {
         "$REPO_ROOT/scripts/patch_vllm_hidden_state_connector_tp_gather.py"
     prepare_verifier_runtime_model
     publish_verifier_metadata
+    run_cmd mkdir -p "$VERIFIER_HIDDEN_STATES_PATH"
     local log_file="$LOG_ROOT/verifier${VERIFIER_ID}/verifier.log"
     local effective_quantization_mode=$VERIFIER_QUANTIZATION_MODE
     if [[ $effective_quantization_mode == auto ]]; then
@@ -465,7 +485,7 @@ run_verifier() {
         "$PYTHON_BIN" "$REPO_ROOT/scripts/launch_vllm.py"
         "$VERIFIER_RUNTIME_MODEL_PATH"
         --hidden-states-backend file
-        --hidden-states-path "$HIDDEN_STATES_PATH"
+        --hidden-states-path "$VERIFIER_HIDDEN_STATES_PATH"
         --target-layer-ids "$TARGET_LAYER_ID"
         --
         --host "$VERIFIER_BIND_HOST"
@@ -514,6 +534,10 @@ run_collector() {
     require_value VERIFIER_HOST
     [[ $OFFLINE_COLLECTION_CONCURRENCY =~ ^[1-9][0-9]*$ ]] || \
         fail "OFFLINE_COLLECTION_CONCURRENCY must be a positive integer"
+    [[ $OFFLINE_COLLECTION_WRITE_CONCURRENCY =~ ^[1-9][0-9]*$ ]] || \
+        fail "OFFLINE_COLLECTION_WRITE_CONCURRENCY must be a positive integer"
+    [[ $OFFLINE_COLLECTION_SCHEDULE == static || $OFFLINE_COLLECTION_SCHEDULE == dynamic ]] || \
+        fail "OFFLINE_COLLECTION_SCHEDULE must be static or dynamic"
     [[ $OFFLINE_COLLECTION_MAX_SAMPLES =~ ^[0-9]+$ ]] || \
         fail "OFFLINE_COLLECTION_MAX_SAMPLES must be a non-negative integer"
     [[ $OFFLINE_COLLECTION_WORLD_SIZE =~ ^[1-9][0-9]*$ ]] || \
@@ -532,6 +556,10 @@ run_collector() {
         --preprocessed-data "$DATA_PATH"
         --output "$HIDDEN_STATES_PATH"
         --concurrency "$OFFLINE_COLLECTION_CONCURRENCY"
+        --write-concurrency "$OFFLINE_COLLECTION_WRITE_CONCURRENCY"
+        --schedule "$OFFLINE_COLLECTION_SCHEDULE"
+        --claim-timeout "$OFFLINE_COLLECTION_CLAIM_TIMEOUT"
+        --schedule-poll-interval "$OFFLINE_COLLECTION_POLL_INTERVAL"
         --request-timeout "$REQUEST_TIMEOUT"
         --max-retries "$MAX_RETRIES"
         --world-size "$OFFLINE_COLLECTION_WORLD_SIZE"
@@ -624,6 +652,10 @@ run_trainer() {
     local mode=$1
     validate_trainer_topology
     validate_trainer_data_mode
+    if [[ $mode == smoke || $TRAINER_DATA_MODE == online-cache ]]; then
+        [[ $VERIFIER_HIDDEN_STATES_PATH == "$HIDDEN_STATES_PATH" ]] || \
+            fail "online/smoke training requires VERIFIER_HIDDEN_STATES_PATH=HIDDEN_STATES_PATH; node-local verifier staging is only readable by offline collectors"
+    fi
     wait_for_marker "$VERIFIER_METADATA_PATH/.ready" "verifier metadata"
     local vllm_endpoints
     vllm_endpoints=$(build_verifier_endpoints)
@@ -714,6 +746,7 @@ run_trainer() {
         --num-speculative-steps "$NUM_SPECULATIVE_STEPS"
         --step-weight-beta "$STEP_WEIGHT_BETA"
         --mtp-logits-chunk-size "$MTP_LOGITS_CHUNK_SIZE"
+        --mtp-training-strategy "$MTP_TRAINING_STRATEGY"
         --total-seq-len "$effective_seq_len"
         --hidden-states-dtype bfloat16
         --noise-std 0
@@ -729,6 +762,7 @@ run_trainer() {
         --request-timeout "$REQUEST_TIMEOUT"
         --max-retries "$MAX_RETRIES"
         --log-freq "$effective_log_freq"
+        --memory-log-freq "$MEMORY_LOG_FREQ"
         --fsdp-shard
         --fsdp-wrap-policy "$FSDP_WRAP_POLICY"
         --fsdp-min-numel "$FSDP_MIN_NUMEL"

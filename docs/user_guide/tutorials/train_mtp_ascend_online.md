@@ -460,6 +460,29 @@ against the authoritative full `token_ids` length, performs a TP gather if a
 short shard still reaches the saver, and refuses to publish any mismatched
 file. Disabling DSA CP remains the primary path; the save-boundary check is a
 fail-closed second line of defense.
+Every TP rank still joins the gather, but only TP rank zero performs the DtoH
+copy and publishes the reconstructed file. TP16 therefore produces one write
+per request instead of sixteen redundant, contending writes.
+
+For production 4K MTP3 runs, use
+`examples/train/mtp_glm52_ascend_production_4v4t_4k.example.yaml` and launch:
+
+```bash
+bash examples/train/manage_mtp_glm52_ascend_online_4v4t.sh production \
+  --config /path/to/filled-production.yaml
+```
+
+This cleanly rolls all verifiers onto the configured connector and allocator
+settings, generates into verifier-local staging, dynamically balances sample
+claims across collectors, atomically publishes validated files to shared
+storage, verifies cache completeness, and only then starts pure-offline FSDP
+training. The production profile uses `mtp_training_strategy: sampled_step`:
+the trainer rotates one gradient-bearing MTP horizon per optimizer step and
+scales it into an unbiased estimate of the original three-horizon weighted
+loss value; gradients are truncated through preceding recurrent horizons. Full
+validation still unrolls all horizons. This bounds the retained
+GLM-MoE graph to one pass and avoids activation-checkpoint recomputation
+overlapping a fresh FSDP unshard.
 
 Trainer logs and checkpoints:
 

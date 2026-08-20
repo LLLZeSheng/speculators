@@ -1,3 +1,4 @@
+import gc
 import json
 import logging
 import os
@@ -132,12 +133,45 @@ class TrainerConfig(NamedTuple):
     save_best: bool = False
     hidden_states_dtype: torch.dtype = torch.bfloat16
     log_freq: int = 1
+    memory_log_freq: int = 10
     fsdp_shard: bool = False
     fsdp_skip_initial_broadcast: bool = False
     fsdp_wrap_policy: Literal["layer", "memory_efficient"] = "layer"
     fsdp_min_numel: int = 8_000_000
     fsdp_experts_per_unit: int = 8
     max_steps: int | None = None
+
+
+def _accelerator_memory_snapshot() -> dict[str, float]:
+    """Return best-effort per-rank accelerator memory in GiB."""
+    result: dict[str, float] = {}
+    accelerator = getattr(torch, "npu", None)
+    if accelerator is None:
+        accelerator = getattr(torch, "cuda", None)
+    if accelerator is None:
+        return result
+    scale = float(1024**3)
+    for key, method_name in (
+        ("allocated_gib", "memory_allocated"),
+        ("reserved_gib", "memory_reserved"),
+        ("peak_allocated_gib", "max_memory_allocated"),
+        ("peak_reserved_gib", "max_memory_reserved"),
+    ):
+        method = getattr(accelerator, method_name, None)
+        if callable(method):
+            try:
+                result[key] = float(method()) / scale
+            except (RuntimeError, TypeError):
+                pass
+    mem_get_info = getattr(accelerator, "mem_get_info", None)
+    if callable(mem_get_info):
+        try:
+            free, total = mem_get_info()
+            result["free_gib"] = float(free) / scale
+            result["total_gib"] = float(total) / scale
+        except (RuntimeError, TypeError):
+            pass
+    return result
 
 
 def _startup_heartbeat_seconds() -> float:
@@ -304,6 +338,24 @@ class Trainer:
 
         self.setup_trainer()
         self.setup_model()
+        # FSDP setup and checkpoint materialization create short-lived staging
+        # tensors. Reclaim their cached blocks before optimizer construction and
+        # the first forward so startup fragmentation does not consume the small
+        # headroom needed by the first all-gather.
+        gc.collect()
+        accelerator_module = getattr(torch, "npu", None)
+        if accelerator_module is None:
+            accelerator_module = getattr(torch, "cuda", None)
+        empty_cache = getattr(accelerator_module, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+        root_logger.info(
+            "TRAIN_STARTUP_MEMORY rank=%d local_rank=%d memory=%s",
+            self.rank,
+            self.local_rank,
+            _accelerator_memory_snapshot(),
+            extra={"override_rank0_filter": True},
+        )
         with _StartupStage("optimizer_init"):
             self.setup_optimizer()
         ready_started = time.monotonic()
@@ -599,30 +651,71 @@ class Trainer:
                 for k, v in batch.items()
             }
 
-            with torch.autocast(
-                self.device_type, dtype=self.config.hidden_states_dtype
-            ):
-                timer.mark("fetch")
-                _draft_tokens, loss, metrics = self.model(
-                    **gpu_batch, **(self.config.train_call_kwargs or {})
-                )
-
-            timer.mark("fwd")
-            self._optimizers_zero_grad()
-            loss_finite = _replicated_finite_flag(loss, loss.device)
-            if self.is_distributed:
-                dist.all_reduce(loss_finite, op=dist.ReduceOp.MIN)
-            if not bool(loss_finite.item()):
-                if self.rank == 0:
-                    root_logger.warning(
-                        "Skipping a training batch because at least one rank "
-                        "produced a non-finite loss. No optimizer or scheduler "
-                        "step was performed."
+            call_kwargs = dict(self.config.train_call_kwargs or {})
+            if call_kwargs.get("training_strategy") == "sampled_step":
+                step_weights = call_kwargs.get("step_weights")
+                if not isinstance(step_weights, list) or not step_weights:
+                    raise ValueError(
+                        "sampled_step MTP training requires non-empty step_weights"
                     )
-                t_before_fetch = timer.now() or time.perf_counter()
-                continue
+                call_kwargs["sampled_step"] = self.global_step % len(step_weights)
 
-            loss.backward()
+            reset_peak = getattr(
+                getattr(torch, "npu", getattr(torch, "cuda", None)),
+                "reset_peak_memory_stats",
+                None,
+            )
+            if callable(reset_peak):
+                try:
+                    reset_peak()
+                except RuntimeError:
+                    pass
+
+            failed_stage = "forward"
+            try:
+                with torch.autocast(
+                    self.device_type, dtype=self.config.hidden_states_dtype
+                ):
+                    timer.mark("fetch")
+                    _draft_tokens, loss, metrics = self.model(
+                        **gpu_batch, **call_kwargs
+                    )
+
+                timer.mark("fwd")
+                self._optimizers_zero_grad()
+                loss_finite = _replicated_finite_flag(loss, loss.device)
+                if self.is_distributed:
+                    dist.all_reduce(loss_finite, op=dist.ReduceOp.MIN)
+                if not bool(loss_finite.item()):
+                    if self.rank == 0:
+                        root_logger.warning(
+                            "Skipping a training batch because at least one rank "
+                            "produced a non-finite loss. No optimizer or scheduler "
+                            "step was performed."
+                        )
+                    t_before_fetch = timer.now() or time.perf_counter()
+                    continue
+
+                failed_stage = "backward"
+                loss.backward()
+            except torch.OutOfMemoryError:
+                shapes = {
+                    key: tuple(value.shape)
+                    for key, value in gpu_batch.items()
+                    if isinstance(value, torch.Tensor)
+                }
+                root_logger.exception(
+                    "TRAIN_OOM stage=%s rank=%d local_rank=%d global_step=%d "
+                    "batch_shapes=%s memory=%s",
+                    failed_stage,
+                    get_rank(),
+                    get_local_rank(),
+                    self.global_step,
+                    shapes,
+                    _accelerator_memory_snapshot(),
+                    extra={"override_rank0_filter": True},
+                )
+                raise
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             grad_finite = _replicated_finite_flag(grad_norm, loss.device)
             if self.is_distributed:
@@ -683,6 +776,19 @@ class Trainer:
                         "global_step": self.global_step,
                     },
                     extra={"step": self.global_step},
+                )
+            if (
+                self.config.memory_log_freq > 0
+                and self.global_step % self.config.memory_log_freq == 0
+                and get_local_rank() == 0
+            ):
+                root_logger.info(
+                    "TRAIN_MEMORY rank=%d local_rank=%d global_step=%d memory=%s",
+                    get_rank(),
+                    get_local_rank(),
+                    self.global_step,
+                    _accelerator_memory_snapshot(),
+                    extra={"override_rank0_filter": True},
                 )
             self.global_step += 1
 

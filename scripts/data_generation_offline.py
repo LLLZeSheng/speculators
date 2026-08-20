@@ -18,6 +18,8 @@ import logging
 import os
 import shutil
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +127,41 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--write-concurrency",
+        type=int,
+        default=1,
+        help=(
+            "Maximum concurrent publications to the final shared cache. Keep this "
+            "small for NFS/SFS; verifier requests continue while writes run in "
+            "background threads (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--schedule",
+        choices=("static", "dynamic"),
+        default="static",
+        help=(
+            "Multi-node scheduling policy. static assigns index %% world_size. "
+            "dynamic uses atomic shared-directory claims so faster verifiers can "
+            "steal unfinished work from slower nodes (default: static)."
+        ),
+    )
+    parser.add_argument(
+        "--claim-timeout",
+        type=float,
+        default=3600.0,
+        help="Seconds after which an abandoned dynamic work claim may be recovered.",
+    )
+    parser.add_argument(
+        "--schedule-poll-interval",
+        type=float,
+        default=30.0,
+        help=(
+            "Seconds between dynamic rescans when all remaining samples are "
+            "currently claimed (default: 30)."
+        ),
+    )
+    parser.add_argument(
         "--validate-outputs",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -193,6 +230,90 @@ def parse_args():
     return parser.parse_args()
 
 
+def _dynamic_candidates(
+    num_samples: int,
+    max_samples: int | None,
+    existing: set[int],
+    world_size: int,
+    rank: int,
+) -> list[int]:
+    """Return local-first candidates followed by other ranks' unfinished work."""
+    stop = min(num_samples, max_samples) if max_samples is not None else num_samples
+    shards = [
+        [index for index in range(owner, stop, world_size) if index not in existing]
+        for owner in range(world_size)
+    ]
+    order = [(rank + offset) % world_size for offset in range(world_size)]
+    return [index for owner in order for index in shards[owner]]
+
+
+def _try_claim_index(
+    output_dir: Path, index: int, claim_timeout: float
+) -> Path | None:
+    """Atomically claim one output index using NFS-safe directory creation."""
+    target = output_dir / f"hs_{index}.safetensors"
+    if target.is_file():
+        return None
+    claim_root = output_dir / ".claims"
+    claim_root.mkdir(parents=True, exist_ok=True)
+    claim = claim_root / f"hs_{index}.claim"
+    owner_name = f"owner.{os.uname().nodename}.{os.getpid()}.{uuid.uuid4().hex}"
+
+    def create_owner_marker() -> Path:
+        marker = claim / owner_name
+        marker.write_text(f"time={time.time()}\n", encoding="utf-8")
+        return marker
+
+    try:
+        claim.mkdir()
+        marker = create_owner_marker()
+        if target.is_file():
+            _release_claim(marker)
+            return None
+        return marker
+    except FileExistsError:
+        try:
+            age = time.time() - claim.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        if age <= claim_timeout:
+            return None
+        # Rename is atomic on a shared filesystem. Exactly one contender wins stale
+        # recovery; the others observe FileNotFoundError or a fresh replacement.
+        stale = claim.with_name(f"{claim.name}.stale.{uuid.uuid4().hex}")
+        try:
+            claim.rename(stale)
+        except (FileNotFoundError, OSError):
+            return None
+        shutil.rmtree(stale, ignore_errors=True)
+        try:
+            claim.mkdir()
+            return create_owner_marker()
+        except FileExistsError:
+            return None
+
+
+def _release_claim(claim: str | Path | None) -> None:
+    """Release only the claim still owned by this worker.
+
+    Stale recovery renames the entire claim directory and creates a new one at
+    the old path. A unique marker prevents a late original worker from deleting
+    that new owner's claim.
+    """
+    if claim is None:
+        return
+    marker = Path(claim)
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    try:
+        marker.parent.rmdir()
+    except OSError:
+        # A new owner marker or a diagnostic file appeared; it is not ours.
+        pass
+
+
 def _validate_and_commit_hidden_states(
     generated_path: str | Path,
     target_path: Path,
@@ -237,6 +358,7 @@ async def worker(
     skipped_indices: list[int],
     cancel_event: asyncio.Event,
     failure_tracker: _FailureTracker | None,
+    saved_indices: list[int] | None = None,
 ):
     """Worker that pulls items from queue and sends them to the vLLM endpoint."""
     while True:
@@ -246,14 +368,19 @@ async def worker(
             return
 
         idx = item["idx"]
+        claim_path = item.get("claim_path")
 
         # Drain remaining items quickly after cancellation
         if cancel_event.is_set():
+            _release_claim(claim_path)
             queue.task_done()
             continue
 
         target_hidden_states_path = hidden_states_output_dir / f"hs_{idx}.safetensors"
 
+        request_started = time.monotonic()
+        request_seconds = 0.0
+        publish_seconds = 0.0
         try:
             async with vllm_semaphore:  # Limit number of active generate calls
                 hidden_states_path = await generate_hidden_states_async(
@@ -263,6 +390,7 @@ async def worker(
                     timeout=request_timeout,
                     max_retries=max_retries,
                 )
+            request_seconds = time.monotonic() - request_started
             lock_path = hidden_states_path + ".lock"
             if Path(lock_path).exists():  # noqa: ASYNC240
                 await wait_for_lock_async(
@@ -270,7 +398,25 @@ async def worker(
                     timeout=request_timeout if request_timeout is not None else 600,
                 )
 
+            claim_was_recovered = (
+                claim_path is not None
+                and not Path(claim_path).is_file()  # noqa: ASYNC240
+            )
+            if claim_was_recovered:
+                # This request exceeded claim_timeout and another collector
+                # recovered it. Do not let the late original overwrite the new
+                # owner's publication.
+                Path(hidden_states_path).unlink(missing_ok=True)  # noqa: ASYNC240
+                Path(lock_path).unlink(missing_ok=True)  # noqa: ASYNC240
+                logger.warning(
+                    "Discarding stale completed request for sample %d after "
+                    "claim ownership changed",
+                    idx,
+                )
+                continue
+
             async with write_semaphore:  # Limit number of active disk writes
+                publish_started = time.monotonic()
                 await asyncio.to_thread(
                     _validate_and_commit_hidden_states,
                     hidden_states_path,
@@ -278,13 +424,20 @@ async def worker(
                     item["input_ids"],
                     validate_outputs,
                 )
+                publish_seconds = time.monotonic() - publish_started
         except Exception as e:
             if fail_on_error:
                 logger.exception(
                     "Fatal: sample %d aborted with --fail-on-error: %s", idx, e
                 )
-                logging.shutdown()
-                os._exit(1)
+                # Propagate through the normal asyncio shutdown path so this
+                # sample's dynamic claim is released in ``finally``. A hard
+                # os._exit left claims behind until their stale timeout and made
+                # an otherwise resumable production collection appear hung.
+                cancel_event.set()
+                raise RuntimeError(
+                    f"sample {idx} failed with --fail-on-error"
+                ) from e
             logger.warning("Skipping sample %d due to error: %s", idx, e)
             skipped_indices.append(idx)
             if failure_tracker is not None and failure_tracker.record_failure():
@@ -296,34 +449,103 @@ async def worker(
         else:
             if failure_tracker is not None:
                 failure_tracker.record_success()
+            if saved_indices is not None:
+                saved_indices.append(idx)
+            logger.info(
+                "OFFLINE_SAMPLE index=%d tokens=%d request_seconds=%.2f "
+                "publish_seconds=%.2f",
+                idx,
+                len(item["input_ids"]),
+                request_seconds,
+                publish_seconds,
+            )
         finally:
+            _release_claim(claim_path)
             pbar.update(1)
             queue.task_done()
 
 
-async def _feed_queue(to_process, dataset, queue, cancel_event):
-    """Feed dataset items into the worker queue, respecting cancellation."""
-    for i in to_process:
-        if cancel_event.is_set():
-            break
-
-        dataset_item = dataset[i]
-        client_item = build_client_item(dataset_item) | {"idx": i}
-
-        # Check cancel_event while waiting for queue space to avoid
-        # deadlocking when all workers have died.
-        while not cancel_event.is_set():
-            try:
-                queue.put_nowait(client_item)
+async def _feed_queue(
+    to_process,
+    dataset,
+    queue,
+    cancel_event,
+    *,
+    hidden_states_output_dir: Path,
+    dynamic_schedule: bool,
+    claim_timeout: float,
+    schedule_poll_interval: float,
+):
+    """Feed work, rescanning dynamic claims until the shard is complete."""
+    while not cancel_event.is_set():
+        pending = False
+        claimed = False
+        for i in to_process:
+            if cancel_event.is_set():
                 break
-            except asyncio.QueueFull:
-                await asyncio.sleep(0.1)
+
+            target_path = hidden_states_output_dir / f"hs_{i}.safetensors"
+            if target_path.is_file():  # noqa: ASYNC240
+                continue
+            pending = True
+
+            claim_path = None
+            if dynamic_schedule:
+                claim_path = _try_claim_index(
+                    hidden_states_output_dir, i, claim_timeout
+                )
+                if claim_path is None:
+                    continue
+            claimed = True
+            try:
+                dataset_item = dataset[i]
+                client_item = build_client_item(dataset_item) | {
+                    "idx": i,
+                    "claim_path": (
+                        str(claim_path) if claim_path is not None else None
+                    ),
+                }
+            except BaseException:
+                _release_claim(claim_path)
+                raise
+
+            # Check cancel_event while waiting for queue space to avoid
+            # deadlocking when all workers have died.
+            while not cancel_event.is_set():
+                try:
+                    queue.put_nowait(client_item)
+                    break
+                except asyncio.QueueFull:
+                    await asyncio.sleep(0.1)
+            if cancel_event.is_set():
+                _release_claim(claim_path)
+                break
+
+        if not dynamic_schedule or not pending or cancel_event.is_set():
+            break
+        if not claimed:
+            logger.info(
+                "Dynamic scheduler waiting %.1fs for outstanding claims",
+                schedule_poll_interval,
+            )
+        await asyncio.sleep(schedule_poll_interval if not claimed else 0)
 
 
 async def _shutdown_workers(workers, queue, cancel_event):
     """Shut down workers and propagate the first real exception."""
     logger.info("Waiting for remaining file saves to complete...")
     if cancel_event.is_set():
+        # Claims are acquired by the feeder before an item enters the bounded
+        # queue. Release queued-but-not-started claims immediately so healthy
+        # collectors can steal them instead of waiting for claim_timeout.
+        while True:
+            try:
+                queued_item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(queued_item, dict):
+                _release_claim(queued_item.get("claim_path"))
+            queue.task_done()
         # Workers may be dead or draining — cancel any that are
         # still alive so we don't deadlock on sentinel puts.
         for w in workers:
@@ -353,23 +575,37 @@ async def generate_and_save_hidden_states(args, dataset):
     existing_file_indices = get_existing_hidden_state_indices(hidden_states_dir)
     num_samples = len(dataset)
 
-    to_process = get_indices_to_process(
-        num_samples,
-        args.max_samples,
-        existing_file_indices,
-        args.world_size,
-        args.rank,
-    )
+    if args.schedule == "dynamic":
+        to_process = _dynamic_candidates(
+            num_samples,
+            args.max_samples,
+            set(existing_file_indices),
+            args.world_size,
+            args.rank,
+        )
+    else:
+        to_process = get_indices_to_process(
+            num_samples,
+            args.max_samples,
+            existing_file_indices,
+            args.world_size,
+            args.rank,
+        )
     if not to_process:
         return
 
-    logger.info(f"Processing {len(to_process)} samples")
+    logger.info(
+        "Scanning %d candidate samples with schedule=%s",
+        len(to_process),
+        args.schedule,
+    )
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
     vllm_semaphore = asyncio.Semaphore(args.concurrency)
-    write_semaphore = asyncio.Semaphore(args.concurrency)
+    write_semaphore = asyncio.Semaphore(args.write_concurrency)
 
     skipped_indices: list[int] = []
+    saved_indices: list[int] = []
     cancel_event = asyncio.Event()
 
     max_consec = args.max_consecutive_errors
@@ -407,15 +643,25 @@ async def generate_and_save_hidden_states(args, dataset):
                         skipped_indices,
                         cancel_event,
                         failure_tracker,
+                        saved_indices,
                     )
                 )
                 for _ in range(args.concurrency * 2)
             ]
 
-            await _feed_queue(to_process, dataset, queue, cancel_event)
+            await _feed_queue(
+                to_process,
+                dataset,
+                queue,
+                cancel_event,
+                hidden_states_output_dir=hidden_states_dir,
+                dynamic_schedule=args.schedule == "dynamic",
+                claim_timeout=args.claim_timeout,
+                schedule_poll_interval=args.schedule_poll_interval,
+            )
             await _shutdown_workers(workers, queue, cancel_event)
 
-    num_saved = len(to_process) - len(skipped_indices)
+    num_saved = len(saved_indices)
     logger.info(f"Saved {num_saved} new data points to {args.output}")
     if skipped_indices:
         logger.warning(
@@ -427,6 +673,12 @@ def main():
     args = parse_args()
     if int(args.rank) < 0 or int(args.rank) >= int(args.world_size):
         raise ValueError("--rank must be in range [0, world_size)")
+    if args.concurrency <= 0 or args.write_concurrency <= 0:
+        raise ValueError("--concurrency and --write-concurrency must be positive")
+    if args.claim_timeout <= 0 or args.schedule_poll_interval <= 0:
+        raise ValueError(
+            "--claim-timeout and --schedule-poll-interval must be positive"
+        )
     setup_root_logger()
 
     logger.info("EAGLE Offline Data Generation")

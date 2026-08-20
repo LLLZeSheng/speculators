@@ -215,6 +215,8 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         step_weights: list[float] | None = None,
         logits_chunk_size: int | None = None,
         activation_checkpointing: bool = False,
+        training_strategy: str = "full_unroll",
+        sampled_step: int | None = None,
         return_logits: bool = True,
         return_dict: bool = True,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
@@ -243,6 +245,11 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
             retention of an 8K-by-vocabulary logits tensor. Disabled when unset.
         :param activation_checkpointing: Recompute the MTP transformer layer during
             backward instead of retaining its intermediate activations.
+        :param training_strategy: ``full_unroll`` retains the original recursive
+            gradient graph. ``sampled_step`` builds a graph only for one selected
+            prediction horizon and computes earlier recurrent states under no-grad.
+        :param sampled_step: Prediction horizon selected by the trainer when using
+            ``sampled_step``. All distributed ranks must use the same value.
         :param return_logits: Return per-step logits for inference/tests. Training can
             disable this to avoid retaining three full-vocabulary tensors.
         :param return_dict: Unused, kept for interface compatibility.
@@ -256,6 +263,17 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         device = input_ids.device
         batch_size, seq_len = input_ids.shape
         num_steps = self.config.num_speculative_steps
+
+        if training_strategy not in {"full_unroll", "sampled_step"}:
+            raise ValueError(f"unsupported MTP training strategy: {training_strategy}")
+        if training_strategy == "sampled_step":
+            if sampled_step is None or not 0 <= sampled_step < num_steps:
+                raise ValueError(
+                    f"sampled_step must be in [0, {num_steps}) for sampled_step "
+                    f"training, got {sampled_step}"
+                )
+        elif sampled_step is not None:
+            raise ValueError("sampled_step is only valid with sampled_step training")
 
         if step_weights is not None and len(step_weights) != num_steps:
             raise ValueError(
@@ -307,6 +325,13 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 full_correct = full_correct + correct_count
                 full_total = full_total + valid_count_float
 
+                # A sampled horizon deliberately does not project the no-grad
+                # recurrent prefix, so prefix-acceptance metrics cannot be measured
+                # honestly on this training step. Leave their denominator at zero;
+                # full validation still reports the normal acceptance metrics.
+                if training_strategy == "sampled_step":
+                    return
+
                 if prefix_correct is None:
                     conditional_total = valid_count_float
                     prefix_correct = correct
@@ -324,6 +349,15 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         # iterations, which torch.compile requires for stable codegen.
         # Cap steps so short sequences still produce partial results.
         effective_steps = min(num_steps, max(0, seq_len - 2))
+        if (
+            training_strategy == "sampled_step"
+            and sampled_step is not None
+            and sampled_step >= effective_steps
+        ):
+            raise ValueError(
+                f"sampled_step={sampled_step} is unavailable for sequence length "
+                f"{seq_len}; effective_steps={effective_steps}"
+            )
         valid_len = seq_len - effective_steps - 1
         if valid_len <= 0 or effective_steps == 0:
             metrics["loss_sum"] = total_loss.detach().clone()
@@ -360,18 +394,31 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                     position_embeddings=layer_position_embeddings,
                 )
 
-            checkpoint_layer = (
-                activation_checkpointing and self.training and torch.is_grad_enabled()
-            )
-            if checkpoint_layer:
-                mtp_output = checkpoint(
-                    run_mtp_layer,
-                    step_hidden,
-                    step_embeds,
-                    use_reentrant=False,
+            selected_step = sampled_step is None or step == sampled_step
+            # The sampled strategy intentionally avoids retaining autograd state for
+            # the recurrent prefix. It preserves the exact hidden-state values used
+            # by the selected horizon while bounding the graph to one GLM-MoE pass.
+            grad_enabled = selected_step or training_strategy == "full_unroll"
+            with torch.set_grad_enabled(torch.is_grad_enabled() and grad_enabled):
+                checkpoint_layer = (
+                    activation_checkpointing
+                    and grad_enabled
+                    and self.training
+                    and torch.is_grad_enabled()
                 )
-            else:
-                mtp_output = run_mtp_layer(step_hidden, step_embeds)
+                if checkpoint_layer:
+                    mtp_output = checkpoint(
+                        run_mtp_layer,
+                        step_hidden,
+                        step_embeds,
+                        use_reentrant=False,
+                    )
+                else:
+                    mtp_output = run_mtp_layer(step_hidden, step_embeds)
+
+            if not selected_step:
+                current_hidden = mtp_output.detach()
+                continue
 
             step_targets = input_ids[:, step + 2 : step + 2 + valid_len]
             if loss_mask is not None:
@@ -379,6 +426,10 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 step_targets = step_targets.clone()
                 step_targets[step_mask == 0] = _IGNORE_INDEX
             weight = step_weights[step] if step_weights is not None else 1.0
+            if training_strategy == "sampled_step":
+                # The trainer cycles horizons uniformly. Multiplying by K makes the
+                # per-step loss an unbiased estimate of sum(alpha_k * loss_k).
+                weight *= num_steps
             valid_count = (step_targets != _IGNORE_INDEX).sum()
 
             # The ordinary path remains the default for API compatibility. The
@@ -407,6 +458,9 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 )
 
             current_hidden = mtp_output
+
+            if training_strategy == "sampled_step":
+                break
 
         if pending_chunked_steps:
             chunk_size = logits_chunk_size
@@ -529,7 +583,12 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
                 beta=kwargs.get("step_weight_beta", 0.6),
                 num_steps=kwargs["num_speculative_steps"],
             )
-        train_kwargs: dict[str, Any] = {"step_weights": step_weights}
+        train_kwargs: dict[str, Any] = {
+            "step_weights": step_weights,
+            "training_strategy": kwargs.get(
+                "mtp_training_strategy", "full_unroll"
+            ),
+        }
         logits_chunk_size = kwargs.get("mtp_logits_chunk_size")
         memory_efficient = bool(logits_chunk_size)
         train_kwargs.update(
@@ -541,5 +600,6 @@ class MTPDraftModel(DraftVocabMixin, SpeculatorModel):
         )
         val_kwargs = train_kwargs.copy()
         val_kwargs["activation_checkpointing"] = False
+        val_kwargs["training_strategy"] = "full_unroll"
 
         return train_kwargs, val_kwargs

@@ -18,6 +18,9 @@ TEMPLATE_4K = (
 TEMPLATE_2V6T_4K = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_online_2v6t_4k.example.yaml"
 )
+TEMPLATE_PRODUCTION_4K = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_production_4v4t_4k.example.yaml"
+)
 TEMPLATE_OFFLINE_8V = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml"
 )
@@ -111,6 +114,82 @@ def _write_offline_8v_yaml(path: Path) -> None:
     for index in range(8):
         text = text.replace(f"FILL_VERIFIER_{index}_IP", f"10.0.0.{index + 1}")
     path.write_text(text, encoding="utf-8")
+
+
+def _write_production_4k_yaml(path: Path) -> None:
+    text = TEMPLATE_PRODUCTION_4K.read_text(encoding="utf-8")
+    for index in range(4):
+        text = text.replace(f"FILL_VERIFIER_{index}_IP", f"10.0.0.{index + 1}")
+        text = text.replace(f"FILL_TRAINER_{index}_IP", f"10.0.1.{index + 1}")
+    text = text.replace("FILL_UNIQUE_SMOKE_ID", "unit-test-production")
+    path.write_text(text, encoding="utf-8")
+
+
+def test_production_profile_renders_decoupled_collection_and_memory_policy(
+    tmp_path: Path,
+):
+    config = tmp_path / "production-4k.yaml"
+    _write_production_4k_yaml(config)
+
+    result = subprocess.run(
+        ["python", str(RENDERER), "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (
+        "VERIFIER_HIDDEN_STATES_PATH=${VERIFIER_HIDDEN_STATES_PATH:-/tmp/"
+        in result.stdout
+    )
+    assert (
+        "OFFLINE_COLLECTION_SCHEDULE=${OFFLINE_COLLECTION_SCHEDULE:-dynamic}"
+        in result.stdout
+    )
+    assert (
+        "OFFLINE_COLLECTION_CONCURRENCY=${OFFLINE_COLLECTION_CONCURRENCY:-2}"
+        in result.stdout
+    )
+    assert (
+        "OFFLINE_COLLECTION_WRITE_CONCURRENCY="
+        "${OFFLINE_COLLECTION_WRITE_CONCURRENCY:-1}" in result.stdout
+    )
+    assert (
+        "OFFLINE_COLLECTION_POLL_INTERVAL="
+        "${OFFLINE_COLLECTION_POLL_INTERVAL:-30}" in result.stdout
+    )
+    assert (
+        "MTP_TRAINING_STRATEGY=${MTP_TRAINING_STRATEGY:-sampled_step}"
+        in result.stdout
+    )
+    assert (
+        "MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-0}"
+        in result.stdout
+    )
+    assert "TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-offline}" in result.stdout
+
+
+def test_manager_production_dry_run_restarts_collects_then_trains(tmp_path: Path):
+    config = tmp_path / "production-4k.yaml"
+    _write_production_4k_yaml(config)
+
+    result = subprocess.run(
+        ["bash", str(MANAGER), "production", "--config", str(config)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "MANAGER_DRY_RUN": "1",
+            "DASHBOARD_AUTO_START": "0",
+        },
+    )
+
+    assert result.stdout.count("ROLE=verifier") == 4
+    assert result.stdout.count("ROLE=collector") == 4
+    assert result.stdout.count("ROLE=trainer") == 4
+    assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
+    assert "[wait-offline] dry-run" in result.stdout
 
 
 def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
