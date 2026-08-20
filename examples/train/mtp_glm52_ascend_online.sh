@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GLM-5.2 online/offline MTP3 workflow on Ascend 910C / Atlas A3.
+# GLM-5.2 online/offline MTP workflow on Ascend 910C / Atlas A3.
 # Topology is supplied by YAML; each verifier uses 16 NPUs.
 # Run one role per node. See docs/user_guide/tutorials/train_mtp_ascend_online.md.
 
@@ -18,11 +18,12 @@ VERIFIER_MODEL_PATH=${VERIFIER_MODEL_PATH:-/mnt/xds/sfs/l00936201/glm52-w4a8-mg1
 # The prepared MG13 view keeps its native MTP layer and shared embedding/head
 # tensors in floating point even though the main verifier layers are W4A8.
 MTP_INIT_MODEL_PATH=${MTP_INIT_MODEL_PATH:-$VERIFIER_MODEL_PATH}
+NUM_SPECULATIVE_STEPS=${NUM_SPECULATIVE_STEPS:-3}
 DATA_PATH=${DATA_PATH:-${SHARED_ROOT}/spec_train/dataset/hf/nuoya-average2k8k-32k}
 HIDDEN_STATES_PATH=${HIDDEN_STATES_PATH:-${SHARED_ROOT}/spec_train/online_hidden_states/glm52-w4a8c8}
-MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-mg13-native-mtp3}
-OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp3}
-LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp3}
+MTP_DRAFT_PATH=${MTP_DRAFT_PATH:-${SHARED_ROOT}/spec_train/initial/glm52-mg13-native-mtp${NUM_SPECULATIVE_STEPS}}
+OUTPUT_PATH=${OUTPUT_PATH:-${SHARED_ROOT}/spec_train/checkpoints/glm52-w4a8c8-mtp${NUM_SPECULATIVE_STEPS}}
+LOG_ROOT=${LOG_ROOT:-${SHARED_ROOT}/spec_train/logs/glm52-w4a8c8-mtp${NUM_SPECULATIVE_STEPS}}
 VERIFIER_METADATA_PATH=${VERIFIER_METADATA_PATH:-${SHARED_ROOT}/spec_train/metadata/glm52-w4a8c8}
 VERIFIER_RUNTIME_ROOT=${VERIFIER_RUNTIME_ROOT:-${SHARED_ROOT}/spec_train/runtime_models/glm52-w4a8c8}
 # MG13 is an Ascend ModelSlim checkpoint even though its source config declared
@@ -51,7 +52,7 @@ MASTER_ADDR=${MASTER_ADDR:-}
 MASTER_PORT=${MASTER_PORT:-29500}
 LOCAL_IP=${LOCAL_IP:-}
 NIC_NAME=${NIC_NAME:-}
-RUN_ID=${RUN_ID:-glm52-w4a8c8-mtp3}
+RUN_ID=${RUN_ID:-glm52-w4a8c8-mtp${NUM_SPECULATIVE_STEPS}}
 
 TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-32768}
 EPOCHS=${EPOCHS:-5}
@@ -70,7 +71,7 @@ OFFLINE_VALIDATION_SAMPLES=${OFFLINE_VALIDATION_SAMPLES:-8}
 OFFLINE_COLLECTION_WORLD_SIZE=${OFFLINE_COLLECTION_WORLD_SIZE:-4}
 OFFLINE_COLLECTION_RANK=${OFFLINE_COLLECTION_RANK:-${VERIFIER_ID:-0}}
 MAX_STEPS=${MAX_STEPS:-}
-RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp3}
+RUN_NAME=${RUN_NAME:-glm52-w4a8c8-ascend-mtp${NUM_SPECULATIVE_STEPS}}
 # online-cache: generate missing hidden states once and persist them.
 # offline: prohibit generation and consume only the persisted first-epoch cache.
 TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-online-cache}
@@ -172,6 +173,8 @@ run_logged() {
 }
 
 validate_role() {
+    [[ $NUM_SPECULATIVE_STEPS =~ ^[1-9][0-9]*$ ]] || \
+        fail "NUM_SPECULATIVE_STEPS must be positive"
     [[ $FSDP_SKIP_INITIAL_BROADCAST == 0 || $FSDP_SKIP_INITIAL_BROADCAST == 1 ]] || \
         fail "FSDP_SKIP_INITIAL_BROADCAST must be 0 or 1"
     [[ $FSDP_WRAP_POLICY == layer || $FSDP_WRAP_POLICY == memory_efficient ]] || \
@@ -266,10 +269,11 @@ validate_context_window() {
 
 show_config() {
     cat <<EOF
-Resolved Ascend MTP3 configuration:
+Resolved Ascend MTP configuration:
   ROLE=$ROLE DRY_RUN=$DRY_RUN
   VERIFIER_MODEL_PATH=$VERIFIER_MODEL_PATH
   MTP_INIT_MODEL_PATH=$MTP_INIT_MODEL_PATH
+  NUM_SPECULATIVE_STEPS=$NUM_SPECULATIVE_STEPS
   DATA_PATH=$DATA_PATH
   HIDDEN_STATES_PATH=$HIDDEN_STATES_PATH
   MTP_DRAFT_PATH=$MTP_DRAFT_PATH
@@ -560,11 +564,13 @@ wait_for_marker() {
 
 prepare_mtp_draft() {
     local marker="$MTP_DRAFT_PATH/.ready"
+    local algorithm_kwargs
+    algorithm_kwargs=$(printf '{"num_speculative_steps":%d}' "$NUM_SPECULATIVE_STEPS")
     if [[ $DRY_RUN == 1 ]]; then
         print_cmd "$PYTHON_BIN" -m speculators \
             convert "$MTP_INIT_MODEL_PATH" --algorithm mtp \
             --verifier "$MTP_INIT_MODEL_PATH" --output-path "$MTP_DRAFT_PATH" \
-            --algorithm-kwargs '{"num_speculative_steps":3}'
+            --algorithm-kwargs "$algorithm_kwargs"
         return
     fi
     if [[ $NODE_RANK == 0 ]]; then
@@ -581,7 +587,7 @@ prepare_mtp_draft() {
                 --algorithm mtp \
                 --verifier "$MTP_INIT_MODEL_PATH" \
                 --output-path "$temporary" \
-                --algorithm-kwargs '{"num_speculative_steps":3}'
+                --algorithm-kwargs "$algorithm_kwargs"
             touch "$temporary/.ready"
             mv -- "$temporary" "$MTP_DRAFT_PATH"
             trap - EXIT
@@ -705,7 +711,7 @@ run_trainer() {
         --logger tensorboard
         --run-name "$effective_run_name"
         --speculator-type mtp
-        --num-speculative-steps 3
+        --num-speculative-steps "$NUM_SPECULATIVE_STEPS"
         --step-weight-beta "$STEP_WEIGHT_BETA"
         --mtp-logits-chunk-size "$MTP_LOGITS_CHUNK_SIZE"
         --total-seq-len "$effective_seq_len"

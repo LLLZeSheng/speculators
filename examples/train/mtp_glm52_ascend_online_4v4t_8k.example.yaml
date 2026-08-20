@@ -51,6 +51,7 @@ verifier_max_num_seqs: 1
 # TP16 sequence parallel pads 8193 to 8208.
 verifier_max_batched_tokens: 8208
 verifier_gpu_memory_utilization: 0.90
+num_speculative_steps: 3
 total_seq_len: 8192
 # Unlike the default smoke profile, this exercises a real 8K training batch.
 smoke_seq_len: 8192

@@ -121,6 +121,15 @@ def test_trainer_dry_run_builds_four_node_bf16_mtp3_job():
     assert "--on-missing generate" in result.stdout
 
 
+def test_trainer_can_build_mtp2_with_isolated_initial_checkpoint():
+    result = _run("trainer", NODE_RANK="3", NUM_SPECULATIVE_STEPS="2")
+
+    assert result.returncode == 0, result.stderr
+    assert "--num-speculative-steps 2" in result.stdout
+    assert 'num_speculative_steps\\":2' in result.stdout
+    assert "glm52-mg13-native-mtp2" in result.stdout
+
+
 def test_smoke_can_exercise_full_8k_sequence_length():
     result = _run(
         "smoke",

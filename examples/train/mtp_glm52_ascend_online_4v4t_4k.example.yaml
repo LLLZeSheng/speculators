@@ -55,6 +55,7 @@ verifier_max_model_len: 4097
 verifier_max_num_seqs: 4
 verifier_max_batched_tokens: 8224
 verifier_gpu_memory_utilization: 0.90
+num_speculative_steps: 3
 total_seq_len: 4096
 smoke_seq_len: 4096
 request_timeout: 900

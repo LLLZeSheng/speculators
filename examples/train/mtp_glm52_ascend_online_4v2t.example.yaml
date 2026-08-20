@@ -51,6 +51,7 @@ verifier_max_model_len: 32769
 verifier_max_num_seqs: 1
 # TP16 sequence parallel pads 32769 to the next multiple of 16.
 verifier_max_batched_tokens: 32784
+num_speculative_steps: 3
 total_seq_len: 32768
 request_timeout: 900
 max_retries: 3
