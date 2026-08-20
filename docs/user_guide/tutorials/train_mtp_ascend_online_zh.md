@@ -603,6 +603,28 @@ bash "$MANAGER" production --config "$CONFIG"
 不访问 verifier 的 FSDP trainer。采集或训练失败后可重复执行，已经原子发布的
 `hs_<index>.safetensors` 会被复用。
 
+如果只需要确认在线生成、FSDP 前向、反向和 optimizer step 能否完整跑通，不必
+等待全量离线缓存。下面的脚本会从已经填写的生产 YAML 自动生成隔离配置，停止
+collector，重启 verifier，然后运行 1K、2-step 在线 smoke。请求文件被 trainer
+读取后立即删除，不会写入生产缓存：
+
+```bash
+SOURCE_CONFIG=/mnt/xds/mtp/spec_train/config/mtp_glm52_production_4v4t_4k.yaml \
+  bash examples/train/run_glm52_quick_online_smoke.sh run
+
+# 观察状态
+bash examples/train/run_glm52_quick_online_smoke.sh status
+
+# 1K 成功后，用新的 run ID 验证 4K
+SMOKE_SEQ_LEN=4096 SMOKE_RUN_ID=quick-4k-$(date +%Y%m%d-%H%M%S) \
+  bash examples/train/run_glm52_quick_online_smoke.sh run
+```
+
+在线 smoke 的 verifier 与 trainer 位于不同主机，因此请求级 hidden state 仍需
+短暂写入共享目录；`smoke` 固定传递 `--on-generate delete --force-generate`，加载
+成功后立即删除文件。脚本使用带 run ID 的独立目录，既不读取也不删除生产离线
+缓存。
+
 该 profile 将 verifier 输出先写入每台机器的
 `/tmp/speculators-glm52-hidden-states`。collector 校验 token/hidden-state 后，以
 `.partial -> hs_<index>.safetensors` 原子发布到共享目录。这样 vLLM 的保存线程
