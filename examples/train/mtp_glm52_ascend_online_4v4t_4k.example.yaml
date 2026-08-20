@@ -59,6 +59,8 @@ total_seq_len: 4096
 smoke_seq_len: 4096
 request_timeout: 900
 max_retries: 3
+num_workers: 1
+prefetch_factor: 1
 offline_collection_concurrency: 1
 offline_collection_max_samples: 0
 offline_validation_samples: 8

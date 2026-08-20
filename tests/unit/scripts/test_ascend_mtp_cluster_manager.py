@@ -159,6 +159,8 @@ def test_4k_existing_profile_renders_isolated_memory_safe_limits(tmp_path: Path)
     assert "TOTAL_SEQ_LEN=${TOTAL_SEQ_LEN:-4096}" in result.stdout
     assert "SMOKE_SEQ_LEN=${SMOKE_SEQ_LEN:-4096}" in result.stdout
     assert "MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-256}" in result.stdout
+    assert "NUM_WORKERS=${NUM_WORKERS:-1}" in result.stdout
+    assert "PREFETCH_FACTOR=${PREFETCH_FACTOR:-1}" in result.stdout
 
 
 def test_manager_dry_runs_four_offline_collectors(tmp_path: Path):

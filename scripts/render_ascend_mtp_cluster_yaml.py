@@ -48,6 +48,8 @@ SCALAR_MAP = {
     "smoke_seq_len": "SMOKE_SEQ_LEN",
     "request_timeout": "REQUEST_TIMEOUT",
     "max_retries": "MAX_RETRIES",
+    "num_workers": "NUM_WORKERS",
+    "prefetch_factor": "PREFETCH_FACTOR",
     "offline_collection_concurrency": "OFFLINE_COLLECTION_CONCURRENCY",
     "offline_collection_max_samples": "OFFLINE_COLLECTION_MAX_SAMPLES",
     "offline_validation_samples": "OFFLINE_VALIDATION_SAMPLES",
@@ -333,7 +335,12 @@ def validate(config: dict[str, str | list[str]]) -> None:
         "memory_efficient",
     }:
         raise ValueError("fsdp_wrap_policy must be layer or memory_efficient")
+    if "num_workers" in config:
+        value = config["num_workers"]
+        if not isinstance(value, str) or not value.isdigit():
+            raise ValueError("num_workers must be a non-negative integer")
     for key in (
+        "prefetch_factor",
         "fsdp_min_numel",
         "fsdp_experts_per_unit",
         "mtp_logits_chunk_size",
