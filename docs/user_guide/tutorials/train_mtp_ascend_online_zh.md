@@ -589,6 +589,24 @@ bash examples/train/prepare_glm52_partial_offline_4k.sh
 需要重新生成时请通过 `OUTPUT_DATA=/new/path` 使用新目录。设置
 `VALIDATE_SAMPLES=-1` 可以在发布筛选数据前逐个加载并校验所有缓存文件。
 
+针对上述默认路径和当前四个 trainer 节点，仓库还提供了一键离线训练入口：
+
+```bash
+# 只检查配置和数据映射
+bash examples/train/train_glm52_partial_offline_4k.sh check
+
+# 启动或续训四机 × 16 NPU 的 MTP3 训练
+bash examples/train/train_glm52_partial_offline_4k.sh
+
+# 查看容器与 trainer host-wrapper 日志
+bash examples/train/train_glm52_partial_offline_4k.sh status
+```
+
+对应配置为
+`examples/train/mtp_glm52_ascend_partial_offline_4v4t_4k.yaml`。该入口不会启动
+verifier 或 collector；Manager 只借用 verifier0 的 existing 容器完成共享缓存
+校验，trainer 使用 `--on-missing raise`，训练过程中不会发送 HTTP 请求。
+
 8K YAML 中相关参数为：
 
 ```yaml

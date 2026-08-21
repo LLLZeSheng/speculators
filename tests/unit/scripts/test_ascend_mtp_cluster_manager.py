@@ -21,6 +21,12 @@ TEMPLATE_2V6T_4K = (
 TEMPLATE_PRODUCTION_4K = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_production_4v4t_4k.example.yaml"
 )
+PARTIAL_OFFLINE_4K = (
+    REPO_ROOT / "examples/train/mtp_glm52_ascend_partial_offline_4v4t_4k.yaml"
+)
+PARTIAL_OFFLINE_SCRIPT = (
+    REPO_ROOT / "examples/train/train_glm52_partial_offline_4k.sh"
+)
 TEMPLATE_OFFLINE_8V = (
     REPO_ROOT / "examples/train/mtp_glm52_ascend_offline_collect_8v.example.yaml"
 )
@@ -190,6 +196,43 @@ def test_manager_production_dry_run_restarts_collects_then_trains(tmp_path: Path
     assert result.stdout.count("ROLE=trainer") == 4
     assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
     assert "[wait-offline] dry-run" in result.stdout
+
+
+def test_partial_offline_profile_uses_filtered_data_and_memory_safe_training():
+    result = subprocess.run(
+        ["python", str(RENDERER), "--config", str(PARTIAL_OFFLINE_4K)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "nuoya-first5-long1-4k-partial-offline}" in result.stdout
+    assert "glm52-w4a8-mg13-offline-4k}" in result.stdout
+    assert "TRAINER_DATA_MODE=${TRAINER_DATA_MODE:-offline}" in result.stdout
+    assert "FSDP_EXPERTS_PER_UNIT=${FSDP_EXPERTS_PER_UNIT:-2}" in result.stdout
+    assert "MTP_LOGITS_CHUNK_SIZE=${MTP_LOGITS_CHUNK_SIZE:-128}" in result.stdout
+    assert (
+        "MTP_TRAINING_STRATEGY=${MTP_TRAINING_STRATEGY:-sampled_step}"
+        in result.stdout
+    )
+    assert (
+        "MTP_ACTIVATION_CHECKPOINTING=${MTP_ACTIVATION_CHECKPOINTING:-0}"
+        in result.stdout
+    )
+
+
+def test_partial_offline_entrypoint_dry_run_only_starts_trainers():
+    result = subprocess.run(
+        ["bash", str(PARTIAL_OFFLINE_SCRIPT), "dry-run"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.count("ROLE=trainer") == 4
+    assert "ROLE=verifier" not in result.stdout
+    assert "ROLE=collector" not in result.stdout
+    assert result.stdout.count("TRAINER_DATA_MODE=offline") == 4
 
 
 def test_8k_profile_renders_data_verifier_and_training_limits(tmp_path: Path):
