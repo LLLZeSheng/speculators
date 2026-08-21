@@ -569,6 +569,26 @@ verifier，执行：
 bash "$MANAGER" stop-collectors --config "$CONFIG"
 ```
 
+如果不准备等待完整数据集，可以从已经落盘的缓存生成一个可训练子数据集：
+
+```bash
+bash examples/train/prepare_glm52_partial_offline_4k.sh
+```
+
+脚本扫描 `hs_<原始索引>.safetensors`，筛选原始 HF 数据，并在输出中加入
+`source_index`。它不会复制或重命名 hidden states。默认路径为：
+
+```text
+原始数据：/mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-4k
+现有缓存：/mnt/xds/mtp/spec_train/hidden_states/glm52-w4a8-mg13-offline-4k
+筛选数据：/mnt/xds/mtp/spec_train/dataset/hf/nuoya-first5-long1-4k-partial-offline
+```
+
+运行纯离线训练时，把训练 YAML 的 `data_path` 改为筛选数据，
+`hidden_states_path` 仍保持为现有缓存目录。输出目录已存在时脚本会拒绝覆盖；
+需要重新生成时请通过 `OUTPUT_DATA=/new/path` 使用新目录。设置
+`VALIDATE_SAMPLES=-1` 可以在发布筛选数据前逐个加载并校验所有缓存文件。
+
 8K YAML 中相关参数为：
 
 ```yaml

@@ -31,17 +31,33 @@ def main() -> None:
         "--validate-samples",
         type=int,
         default=8,
-        help="Number of evenly spaced files to load and validate.",
+        help="Evenly spaced files to validate; -1 validates every file, 0 skips.",
     )
     parser.add_argument("--write-ready-marker", action="store_true")
     args = parser.parse_args()
 
     dataset = load_from_disk(args.data)
-    expected = len(dataset)
+    expected_rows = len(dataset)
     if args.max_samples:
         if args.max_samples < 0:
             parser.error("--max-samples must be non-negative")
-        expected = min(expected, args.max_samples)
+        expected_rows = min(expected_rows, args.max_samples)
+
+    if "source_index" in dataset.column_names:
+        raw_source_indices = dataset.with_format(None)["source_index"]
+        source_indices = [
+            int(value) for value in raw_source_indices[:expected_rows]
+        ]
+        if any(index < 0 for index in source_indices):
+            parser.error("source_index values must be non-negative")
+        if len(set(source_indices)) != len(source_indices):
+            parser.error("source_index values must be unique")
+        expected_indices = source_indices
+        index_mapping = "source_index"
+    else:
+        expected_indices = list(range(expected_rows))
+        index_mapping = "contiguous"
+    expected_set = set(expected_indices)
 
     cache = Path(args.hidden_states)
     if not cache.is_dir():
@@ -54,41 +70,59 @@ def main() -> None:
         if match:
             present.add(int(match.group(1)))
         elif entry.name.endswith((".partial", ".lock")):
-            partial += 1
+            if index_mapping == "contiguous":
+                partial += 1
+            else:
+                # A filtered dataset is a snapshot of completed final files.
+                # Ignore work in progress for rows outside that snapshot.
+                match = re.search(r"hs_(\d+)\.safetensors", entry.name)
+                if match and int(match.group(1)) in expected_set:
+                    partial += 1
 
-    missing_count = 0
-    first_missing: list[int] = []
-    for index in range(expected):
-        if index not in present:
-            missing_count += 1
-            if len(first_missing) < 20:
-                first_missing.append(index)
-    out_of_range = sum(index >= expected for index in present)
-    valid_present = sum(index < expected for index in present)
+    missing = [index for index in expected_indices if index not in present]
+    missing_count = len(missing)
+    first_missing = missing[:20]
+    out_of_range = len(present - expected_set)
+    valid_present = len(present & expected_set)
     status = "complete" if missing_count == 0 and not partial else "incomplete"
     summary = {
         "status": status,
         "dataset_rows": len(dataset),
-        "expected_files": expected,
+        "expected_files": expected_rows,
         "present_files": valid_present,
         "missing_files": missing_count,
         "partial_or_lock_files": partial,
         "out_of_range_files": out_of_range,
         "first_missing": first_missing,
+        "index_mapping": index_mapping,
     }
-    print(json.dumps(summary, indent=2, sort_keys=True))
     if status != "complete":
+        print(json.dumps(summary, indent=2, sort_keys=True))
         raise SystemExit(1)
 
-    count = min(args.validate_samples, expected)
+    if args.validate_samples < -1:
+        parser.error("--validate-samples must be -1 or a non-negative integer")
+    count = (
+        expected_rows
+        if args.validate_samples == -1
+        else min(args.validate_samples, expected_rows)
+    )
     if count > 0:
-        indices = sorted(
-            {(offset * (expected - 1)) // max(count - 1, 1) for offset in range(count)}
+        positions = sorted(
+            {
+                (offset * (expected_rows - 1)) // max(count - 1, 1)
+                for offset in range(count)
+            }
         )
-        for index in indices:
-            payload = load_file(cache / f"hs_{index}.safetensors")
-            check_hidden_states(payload, list(dataset[index]["input_ids"]))
-        summary["validated_indices"] = indices
+        validated_indices = []
+        for position in positions:
+            file_index = expected_indices[position]
+            payload = load_file(cache / f"hs_{file_index}.safetensors")
+            check_hidden_states(payload, list(dataset[position]["input_ids"]))
+            validated_indices.append(file_index)
+        summary["validated_indices"] = validated_indices
+
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
     if args.write_ready_marker:
         marker = cache / ".offline-ready.json"
