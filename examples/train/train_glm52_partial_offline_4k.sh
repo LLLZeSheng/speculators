@@ -40,8 +40,11 @@ require_files() {
 }
 
 validate_data() {
+    printf '[partial-offline] phase=data_validation status=started samples=%s\n' \
+        "${VALIDATE_SAMPLES:-32}"
     VALIDATE_SAMPLES=${VALIDATE_SAMPLES:-32} \
         bash "$PARTIAL_DATA_SCRIPT" verify
+    printf '[partial-offline] phase=data_validation status=completed\n'
 }
 
 train() {

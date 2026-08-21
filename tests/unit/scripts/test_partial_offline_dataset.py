@@ -88,10 +88,13 @@ def test_checker_accepts_source_index_mapping(
 
     check_offline_main()
 
-    summary = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
     assert summary["status"] == "complete"
     assert summary["index_mapping"] == "source_index"
     assert summary["validated_indices"] == [1, 4]
+    assert "OFFLINE_CHECK phase=cache_scan status=completed" in captured.err
+    assert "OFFLINE_CHECK phase=content_validation status=completed" in captured.err
 
 
 def test_build_partial_dataset_rejects_cache_from_different_dataset(tmp_path: Path):

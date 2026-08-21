@@ -103,10 +103,14 @@ def build_partial_dataset(
         "first_source_index": cache_indices[0],
         "last_source_index": cache_indices[-1],
         "validated_files": len(validated_indices),
-        "validated_indices": validated_indices,
         "index_column": "source_index",
         "hidden_states_copied": False,
     }
+    if len(validated_indices) <= 100:
+        manifest["validated_indices"] = validated_indices
+    elif validated_indices:
+        manifest["first_validated_index"] = validated_indices[0]
+        manifest["last_validated_index"] = validated_indices[-1]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.parent / f".{output.name}.staging-{os.getpid()}-{uuid4().hex}"
