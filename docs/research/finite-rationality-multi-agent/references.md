@@ -1,6 +1,6 @@
 # 参考文献
 
-本清单与报告中的 R01 至 R50 一一对应，覆盖经典理论、协同框架、失效分析、直接相关研究及实验基线。链接指向出版方、作者公开稿或 arXiv 原始来源。正式出版年与预印本首发年分别说明；引用预印本不代表将其视为已通过同行评审的结论。本轮核查日期为2026年10月6—8日。正文引用核心文献，索引同时保留相关理论与扩展阅读。
+本清单与报告中的 R01 至 R51 一一对应，覆盖经典理论、协同框架、失效分析、直接相关研究及实验基线。链接指向出版方、作者公开稿或 arXiv 原始来源。正式出版年与预印本首发年分别说明；引用预印本不代表将其视为已通过同行评审的结论。基础书目核查日期为2026年10月6—8日，10月9日补核关键术语来源并新增R51。正文引用核心文献，索引同时保留相关理论与扩展阅读。
 
 ## R01
 
@@ -20,8 +20,10 @@ BibTeX 键：`nash1950`。
 
 Richard D. McKelvey; Thomas R. Palfrey. **[Quantal Response Equilibria for Normal Form Games](https://doi.org/10.1006/game.1995.1023)**. Games and Economic Behavior, 10(1):6–38, 1995.
 
-报告用途：量化响应与固定点建模基础。\
+报告用途：量化响应模型及其相互一致的均衡定义；采用Logit形式时需说明价值尺度和参数约束。\
 BibTeX 键：`mckelvey1995`。
+
+可访问的[Caltech作者存档记录](https://authors.library.caltech.edu/records/4fh4n-4c340)与[大学课程所存原文](https://econweb.ucsd.edu/~jandreoni/Econ264/papers/McKelvey%20Palfrey%20GEB%201995.pdf)。
 
 ## R04
 
@@ -363,3 +365,10 @@ Md. Ashraful Islam; Mohammed Eunus Ali; Md Rizwan Parvez. **[MapCoder: Multi-Age
 
 报告用途：规划、代码生成与调试交互的已有流程；比较需重新匹配候选数量、可见测试和调用成本，区分程序生成与仓库修复。\
 BibTeX 键：`islam2024mapcoder`。
+
+## R51
+
+Lucas Baudin; Rida Laraki. **[Fictitious Play and Best-Response Dynamics in Identical Interest and Zero-Sum Stochastic Games](https://proceedings.mlr.press/v162/baudin22a.html)**. ICML 2022, PMLR 162:1664–1690, 2022.
+
+报告用途：[正式全文](https://proceedings.mlr.press/v162/baudin22a/baudin22a.pdf)第2节明确所有参与者收益函数相同的利益一致结构，为本项目共同收益设定提供定义依据。其指定学习过程的收敛定理不直接用于有限轮大模型交互。\
+BibTeX 键：`baudin2022`。
