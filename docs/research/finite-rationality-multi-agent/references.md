@@ -1,6 +1,6 @@
 # 参考文献
 
-本清单与报告中的 R01 至 R51 一一对应，覆盖经典理论、协同框架、失效分析、直接相关研究及实验基线。链接指向出版方、作者公开稿或 arXiv 原始来源。正式出版年与预印本首发年分别说明；引用预印本不代表将其视为已通过同行评审的结论。基础书目核查日期为2026年10月6—8日，10月9日补核关键术语来源并新增R51。正文引用核心文献，索引同时保留相关理论与扩展阅读。
+本清单与报告中的 R01 至 R55 一一对应，覆盖经典理论、协同框架、失效分析、直接相关研究及实验基线。链接指向出版方、作者公开稿或 arXiv 原始来源。正式出版年与预印本首发年分别说明；引用预印本不代表将其视为已通过同行评审的结论。基础书目核查日期为2026年10月6—8日，10月9日补核关键术语、博弈控制与动态协作来源，新增R51至R55。正文引用核心文献，索引同时保留相关理论与扩展阅读。
 
 ## R01
 
@@ -372,3 +372,31 @@ Lucas Baudin; Rida Laraki. **[Fictitious Play and Best-Response Dynamics in Iden
 
 报告用途：[正式全文](https://proceedings.mlr.press/v162/baudin22a/baudin22a.pdf)第2节明确所有参与者收益函数相同的利益一致结构，为本项目共同收益设定提供定义依据。其指定学习过程的收敛定理不直接用于有限轮大模型交互。\
 BibTeX 键：`baudin2022`。
+
+## R52
+
+Jason R. Marden; Gürdal Arslan; Jeff S. Shamma. **[Cooperative Control and Potential Games](https://authors.library.caltech.edu/records/xq9ws-8wp90)**. IEEE Transactions on Systems, Man, and Cybernetics, Part B (Cybernetics), 39(6):1393–1407, 2009. DOI:10.1109/TSMCB.2009.2017273.
+
+报告用途：共同目标下的博弈控制、势结构与局部策略调整的理论参照；均衡可能未达到全局目标。研读第II节及状态依赖行动、学习规则相关段落，使用[作者上传全文](https://www.researchgate.net/publication/224401641_Cooperative_Control_and_Potential_Games)，出版信息以Caltech存档为准；具体控制模型的结论不直接作为大模型推理保证。\
+BibTeX 键：`marden2009cooperative`。
+
+## R53
+
+Mingchen Zhuge; Wenyi Wang; Louis Kirsch; Francesco Faccio; Dmitrii Khizbullin; Jürgen Schmidhuber. **[GPTSwarm: Language Agents as Optimizable Graphs](https://proceedings.mlr.press/v235/zhuge24a.html)**. ICML 2024, PMLR 235:62743–62767.
+
+报告用途：协作图和提示优化的非博弈对照；动态调整协作结构已有直接研究，不能仅以“摆脱固定工作流”表述创新。方法研读使用[作者公开全文](https://arxiv.org/html/2402.16823)，主要核对第2节的节点、边与目标优化。比较时单独核算图搜索及开发数据成本。\
+BibTeX 键：`zhuge2024gptswarm`。
+
+## R54
+
+Yingxuan Yang; Huacan Chai; Shuai Shao; Yuanyi Song; Siyuan Qi; Renting Rui; Weinan Zhang. **[AgentNet: Decentralized Evolutionary Coordination for LLM-based Multi-Agent Systems](https://proceedings.neurips.cc/paper_files/paper/2025/file/9a379c1b05793d1c42dc832269834515-Paper-Conference.pdf)**. NeurIPS 2025.
+
+报告用途：去中心化路由、动态任务分配及经验记忆的直接对照；正式版第3.1—3.4节明确路由与执行模块及任务转发、分解和执行。已有动态分工不能作为本项目首创；统一任务图的受限适配与完整方法分别评价，记忆及校准开销单独报告。\
+BibTeX 键：`yang2025agentnet`。
+
+## R55
+
+Jason R. Marden; Jeff S. Shamma. **[Revisiting log-linear learning: Asynchrony, completeness and payoff-based implementation](https://doi.org/10.1016/j.geb.2012.03.006)**. Games and Economic Behavior, 75(2):788–808, 2012.
+
+报告用途：概率策略更新及均衡选择的理论参照，区分渐近随机稳定性与有限预算效果。补读使用[作者上传的2011年1月5日修订稿](https://www.researchgate.net/publication/224216574_Revisiting_log-linear_learning_Asynchrony_completeness_and_payoff-based_implementation)引言与设定，页面关联2010年会议记录，不能据此混用会议DOI和期刊信息；期刊元数据由[作者机构记录](https://experts.illinois.edu/en/publications/revisiting-log-linear-learning-asynchrony-completeness-and-payoff/)核对。本稿仅引用其理论方向与适用边界，不声称完成期刊版逐条证明核验。\
+BibTeX 键：`marden2012loglinear`。
